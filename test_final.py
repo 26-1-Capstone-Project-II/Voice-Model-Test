@@ -1,5 +1,5 @@
 """
-올라잇 1단계 — 최종 통합 테스트
+온보이스 1단계 — 최종 통합 테스트
 베이스라인 모델: w11wo/wav2vec2-xls-r-300m-korean
 
 테스트 항목:
@@ -197,7 +197,7 @@ def test_mic(processor, model, device, duration: int = 5):
 
 # ── 메인 ──────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="올라잇 1단계 최종 통합 테스트")
+    parser = argparse.ArgumentParser(description="온보이스 1단계 최종 통합 테스트")
     parser.add_argument("--file", action="store_true", help="파일 모드만 실행")
     parser.add_argument("--mic",  action="store_true", help="마이크 모드만 실행")
     parser.add_argument("--duration", type=int, default=5)

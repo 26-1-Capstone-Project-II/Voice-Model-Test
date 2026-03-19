@@ -1,5 +1,5 @@
 """
-올라잇 1단계 — G2P 기반 발음 전사 재점수
+온보이스 1단계 — G2P 기반 발음 전사 재점수
 핵심 변경: 정답 기준을 맞춤법 → 표준 발음 전사로 교체
 
 흐름:
@@ -132,7 +132,7 @@ TEST_SENTENCES = [
 # ── 메인 ──────────────────────────────────────────────────
 def main():
     print(f"{'═'*60}")
-    print(f"  {C['bold']}올라잇 1단계 — G2P 기반 발음 전사 재점수{C['reset']}")
+    print(f"  {C['bold']}온보이스 1단계 — G2P 기반 발음 전사 재점수{C['reset']}")
     print(f"  정답 기준: 맞춤법 표기 → 표준 발음 전사 (g2pk)")
     print(f"{'═'*60}\n")
 
@@ -220,7 +220,7 @@ def main():
         print(f"    발  음: [{sc}{bar_n}{C['reset']}] {sc}{new_scores[i]:.0f}점{C['reset']}  "
               f"{_grade(new_scores[i])}")
     print()
-    print(f"  → {C['bold']}발음 전사 기준이 올라잇의 올바른 점수 기준!{C['reset']}")
+    print(f"  → {C['bold']}발음 전사 기준이 온보이스의 올바른 점수 기준!{C['reset']}")
     print(f"  → pronunciation_scorer.py 에 g2pk 통합 예정")
     print(f"{'═'*60}")
 

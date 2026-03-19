@@ -128,23 +128,52 @@ def load_model(model_id: str = MODEL_OPTIONS[0]):
         return _model_cache[model_id]
 
     from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
+    import time
 
     print(f"\n[모델 로드 중] {model_id}")
     print("  ※ 첫 실행 시 ~1.3GB 자동 다운로드 (이후 캐시 사용)")
 
     try:
+        t0 = time.time()
         processor = Wav2Vec2Processor.from_pretrained(model_id)
         model     = Wav2Vec2ForCTC.from_pretrained(model_id)
         model.eval()
 
-        # 가속 디바이스 자동 감지: Apple Silicon > CUDA > CPU
+        # ── INT8 동적 양자화 (CPU 전용) ──────────────────────
+        # CUDA/MPS 는 양자화 미지원 → CPU일 때만 적용
+        # 효과: Linear 레이어 가중치를 FP32 → INT8 로 변환
+        #   - 메모리 사용량 ~50% 감소 (~1.3GB → ~650MB)
+        #   - CPU 추론 속도 1.5~2x 향상
+        #   - 정확도 손실 최소 (dynamic quantization 특성)
         device = (
             "mps"  if torch.backends.mps.is_available() else
             "cuda" if torch.cuda.is_available()          else
             "cpu"
         )
-        model = model.to(device)
-        print(f"  ✅ 로드 완료  (device: {device})")
+        if device == "cpu":
+            # ── INT8 동적 양자화 ──────────────────────────────
+            # torch 2.10+ → torchao API 사용, 이전 버전 → 기존 API fallback
+            try:
+                import torchao
+                from torchao.quantization import quantize_, int8_dynamic_activation_int8_weight
+                quantize_(model, int8_dynamic_activation_int8_weight())
+                print(f"  ⚡ INT8 양자화 적용 (torchao)")
+            except (ImportError, Exception):
+                # torchao 미설치 또는 실패 시 기존 API fallback
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    model = torch.quantization.quantize_dynamic(
+                        model,
+                        {torch.nn.Linear},
+                        dtype=torch.qint8,
+                    )
+                print(f"  ⚡ INT8 양자화 적용 (torch.quantization)")
+        else:
+            model = model.to(device)
+
+        t1 = time.time()
+        print(f"  ✅ 로드 완료  (device: {device}, {t1-t0:.1f}초)")
         _model_cache[model_id] = (processor, model, device)
         return processor, model, device
 
@@ -439,19 +468,29 @@ def _jamo_feedback(ref_syl: str, hyp_syl: str) -> str:
 def analyze_pronunciation(original: str, hyp: str) -> dict:
     """
     original : 사용자가 입력한 목표 문장 (맞춤법)
-    hyp      : 모델이 인식한 결과
-    phonetic : G2P로 변환한 발음 전사 → 실제 채점 기준
+    hyp      : 모델이 인식한 결과 (raw — 후처리 없음)
 
-    반환값에 jamo_feedback 추가:
-      음절 교체 오류에서 자모 단위 차이를 분석해 구체적 피드백 제공
-      "ㅊ(파찰음(격)) → ㅌ(파열음(격))" 같은 형태
+    채점 흐름:
+      1. G2P(original) → phonetic_ref  (정답 발음 전사)
+      2. hyp 그대로 사용               (모델 출력 보존 — 핵심!)
+      3. phonetic_ref vs hyp 비교 → 점수 + diff
+
+    ❌ 절대 하면 안 되는 것: G2P(hyp) 후처리
+      이유: 모델이 "싶어요" 로 출력했을 때 G2P 적용하면 "시퍼요" 로 바뀌어
+            사용자가 "시포요" 로 잘못 발음해도 100점이 나오는 심각한 오류 발생.
+            발음 오류 정보가 모델 출력에 담겨 있으므로 raw 그대로 써야 함.
+
+    1단계 한계 (2단계 파인튜닝으로 해결 예정):
+      모델이 "시퍼요" 대신 "싶어요" 를 출력하는 경우
+      → 정확히 발음해도 오류로 잡힘 (false negative)
+      → 근본 해결은 발음 전사 라벨로 파인튜닝해 모델이 "시퍼요" 를 출력하게 만드는 것
     """
     from jiwer import cer as compute_cer
 
-    phonetic = to_phonetic(original)
+    phonetic_ref = to_phonetic(original)   # 정답 발음 전사
 
-    ref_syl = list(phonetic.replace(" ", ""))
-    hyp_syl = list(hyp.replace(" ", ""))
+    ref_syl = list(phonetic_ref.replace(" ", ""))
+    hyp_syl = list(hyp.replace(" ", ""))   # 모델 출력 그대로
 
     matcher = difflib.SequenceMatcher(None, ref_syl, hyp_syl, autojunk=False)
     diff = []
@@ -470,15 +509,15 @@ def analyze_pronunciation(original: str, hyp: str) -> dict:
                 entry["jamo_feedback"] = fb
         diff.append(entry)
 
-    ref_flat   = phonetic.replace(" ", "")
+    ref_flat   = phonetic_ref.replace(" ", "")
     hyp_flat   = hyp.replace(" ", "")
     error_rate = compute_cer(ref_flat, hyp_flat) if ref_flat else 0.0
     score      = max(0.0, round((1 - error_rate) * 100, 1))
 
     return {
-        "original": original,
-        "phonetic": phonetic,
-        "hyp":      hyp,
+        "original": original,       # 입력 문장 (맞춤법)
+        "phonetic": phonetic_ref,   # G2P 정답 전사
+        "hyp":      hyp,            # 모델 인식 결과 (raw)
         "score":    score,
         "cer":      round(error_rate * 100, 1),
         "diff":     diff,
@@ -527,7 +566,7 @@ def print_result(a: dict, show_json: bool = False):
 
     # 음절 diff 시각화 (발음 전사 기준)
     print(f"  {C['bold']}[음절 단위 비교]  "
-          f"{C['dim']}(발음 전사 기준){C['reset']}")
+          f"{C['dim']}(G2P 발음 전사 기준){C['reset']}")
     ref_vis = "  발음 정답: "
     hyp_vis = "  모델 인식: "
     for seg in a["diff"]:
@@ -699,13 +738,14 @@ def batch_mode(processor, model, device, duration: int = 5):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="올라잇 발음 분석기 (1단계 · CTC + Greedy Decoding)",
+        description="온보이스 발음 분석기 (1단계 · CTC + Greedy Decoding)",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument("--text",     type=str,  help="목표 문장 (정답)")
     parser.add_argument("--audio",    type=str,  help="오디오 파일 (.wav/.mp3/.m4a)")
     parser.add_argument("--mic",      action="store_true", help="마이크 실시간 녹음")
     parser.add_argument("--practice", action="store_true", help="★ 연습 모드: 듣기 → 따라 말하기 → 분석")
+    parser.add_argument("--test",     action="store_true", help="🔬 자동 테스트: 마이크 없이 gTTS로 파이프라인 검증")
     parser.add_argument("--duration", type=int,  default=5,    help="녹음 시간 초 (기본 5)")
     parser.add_argument("--save",     type=str,  default=None, help="녹음 저장 경로")
     parser.add_argument("--batch",    action="store_true",     help="배치 연습 모드 (TTS 포함)")
@@ -727,18 +767,92 @@ def main():
 
     check_dependencies(need_mic=args.mic or args.practice or args.batch)
 
-    if not args.batch and not args.practice and not args.text:
-        parser.error("--text, --practice, --batch 중 하나를 지정하세요.")
-    if not args.batch and not args.practice and not args.audio and not args.mic:
+    if not args.batch and not args.practice and not args.test and not args.text:
+        parser.error("--text, --practice, --test, --batch 중 하나를 지정하세요.")
+    if not args.batch and not args.practice and not args.test and not args.audio and not args.mic:
         parser.error("--audio 또는 --mic 중 하나를 선택하세요.")
 
     processor, model, device = load_model(args.model)
+
+    # ── 자동 테스트 모드 (마이크 없이 gTTS로 파이프라인 검증) ──
+    if args.test:
+        import io
+        from gtts import gTTS
+
+        # --text 지정 시 해당 문장만, 없으면 기본 테스트셋
+        test_cases = (
+            [args.text] if args.text else [
+                "같이 해볼까",
+                "퇴근하고 싶어요",
+                "오늘 날씨가 좋네요",
+                "저는 잘 들리지 않아요",
+                "안녕하세요 반갑습니다",
+            ]
+        )
+
+        print(f"\n{C['bold']}=== 자동 테스트 모드 (gTTS) ==={C['reset']}")
+        print(f"  {C['dim']}마이크 없이 gTTS 음성으로 전체 파이프라인 검증{C['reset']}\n")
+
+        scores = []
+        for sentence in test_cases:
+            phonetic = to_phonetic(sentence)
+            print(f"  {C['cyan']}▶ {sentence}{C['reset']}", end="")
+            if phonetic != sentence:
+                print(f"  {C['dim']}→ {phonetic}{C['reset']}", end="")
+            print()
+
+            # gTTS로 음성 생성
+            try:
+                buf = io.BytesIO()
+                gTTS(text=sentence, lang="ko").write_to_fp(buf)
+                buf.seek(0)
+                import librosa
+                audio, _ = librosa.load(buf, sr=TARGET_SR, mono=True)
+            except Exception as e:
+                print(f"  {C['red']}❌ gTTS 생성 실패: {e}{C['reset']}\n")
+                continue
+
+            audio  = preprocess_audio(audio, verbose=False)
+            hyp    = transcribe_greedy(audio, processor, model, device)
+            result = analyze_pronunciation(sentence, hyp)
+
+            score = result["score"]
+            sc    = C["green"] if score >= 80 else C["yellow"] if score >= 50 else C["red"]
+            icon  = "✅" if score >= 80 else "🔍" if score >= 50 else "❌"
+            bar   = "█" * int(score/5) + "░" * (20 - int(score/5))
+
+            print(f"  {icon} 인식: {hyp}")
+            print(f"     점수: {sc}{score}점{C['reset']}  [{sc}{bar}{C['reset']}]")
+
+            # 오류만 간략히 출력
+            errors = [s for s in result["diff"] if s["type"] != "equal"]
+            for seg in errors:
+                t = seg["type"]
+                fb = seg.get("jamo_feedback", "")
+                fb_str = f"  {C['dim']}({fb}){C['reset']}" if fb else ""
+                if t == "replace":
+                    print(f"     • {C['red']}'{seg['ref']}'{C['reset']} → "
+                          f"{C['yellow']}'{seg['hyp']}'{C['reset']}{fb_str}")
+                elif t == "delete":
+                    print(f"     • {C['red']}'{seg['ref']}'{C['reset']} 탈락")
+            print()
+            scores.append(score)
+
+        if scores:
+            avg = sum(scores) / len(scores)
+            sc  = C["green"] if avg >= 70 else C["yellow"]
+            print(f"{'═'*56}")
+            print(f"  {C['bold']}테스트 요약{C['reset']}  |  "
+                  f"{len(scores)}문장  |  평균 {sc}{avg:.1f}점{C['reset']}")
+            print(f"  {C['dim']}※ gTTS 기준 점수 — 실제 목소리에서는 다를 수 있음{C['reset']}")
+            print(f"{'═'*56}")
+        return
 
     # ── 연습 모드 (★ 핵심) ───────────────────────────────
     if args.practice:
         if not args.text:
             # 대화형: 문장을 직접 입력받기
-            print(f"\n{C['bold']}=== 올라잇 연습 모드 ==={C['reset']}")
+            print(f"\n{C['bold']}=== 온보이스 연습 모드 ==={C['reset']}")
             print(f"  {C['dim']}문장 입력 → TTS 재생 → 따라 말하기 → 분석{C['reset']}\n")
             while True:
                 text = input(f"  {C['cyan']}연습할 문장을 입력하세요 (q=종료): {C['reset']}").strip()
