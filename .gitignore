@@ -1,19 +1,24 @@
-
-# gitignore에 대용량 폴더 추가
-*.pt
-*.bin
-*.safetensors
-quantized_model/
-model_cache/
-
-finetuned_model/
+@"
+# 데이터셋 (용량 너무 큼)
 segmented_dataset/
-segmented_test/
-segmented_test2/
-segmented_test3/
+sampled_dataset/
 구음장애 음성인식 데이터/
-dataset_structure.json
-*.wav
-*.zip
+
+# 모델 출력
+finetuned_model/
+
+# Python 캐시
 __pycache__/
 *.pyc
+*.pyo
+.pytest_cache/
+
+# 임시 파일
+*.log
+dataset_structure.json
+segmented_test*/
+
+# 환경
+.env
+venv/
+"@ | Out-File -FilePath .gitignore -Encoding utf8
