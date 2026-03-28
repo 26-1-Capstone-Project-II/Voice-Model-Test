@@ -104,31 +104,37 @@ def check_and_install():
 
 def discover_aihub_files(data_dir: str) -> List[Dict]:
     """
-    AIHub 구음장애 데이터셋 폴더 구조를 탐색해 {audio, text} 쌍을 반환합니다.
+    AIHub 구음장애 데이터셋(608) 실제 구조에 맞게 탐색합니다.
 
-    AIHub 608 데이터셋 예상 구조:
-        dataset/
-        ├── Training/
-        │   ├── 원천데이터/
-        │   │   └── **/*.wav  (또는 .flac)
-        │   └── 라벨링데이터/
-        │       └── **/*.json
-        └── Validation/
-            ├── 원천데이터/
-            └── 라벨링데이터/
+    실제 데이터셋 구조:
+        013.구음장애_음성인식_데이터/01.데이터/1.Training/
+        ├── 원천데이터/
+        │   └── 21.조음/*.wav          ← 오디오 파일
+        └── 라벨링데이터_250331_add/
+            └── 21.조음/*.json         ← 라벨 파일
 
-    JSON 라벨 형식 (AIHub 표준):
-        { "transcription": { "kor": "발화 텍스트" }, ... }
+    JSON 실제 구조:
+        {
+            "Transcript": "발화 텍스트",   ← 텍스트
+            "File_id": "ID-xxx.wav",       ← 대응 wav 파일명
+            ...
+        }
     """
     data_dir = Path(data_dir)
     samples = []
 
-    # 오디오 파일 확장자
-    audio_exts = {".wav", ".flac", ".mp3"}
-
     # JSON 라벨 파일 수집 (재귀 탐색)
     json_files = list(data_dir.rglob("*.json"))
     print(f"  JSON 라벨 파일 발견: {len(json_files)}개")
+
+    # 오디오 파일 전체를 파일명 기준으로 인덱싱 (빠른 탐색)
+    print(f"  오디오 파일 인덱싱 중...")
+    audio_index = {}
+    for wav in data_dir.rglob("*.wav"):
+        audio_index[wav.name] = wav
+    for flac in data_dir.rglob("*.flac"):
+        audio_index[flac.name] = flac
+    print(f"  오디오 파일 인덱스: {len(audio_index)}개")
 
     for jf in json_files:
         try:
@@ -136,33 +142,35 @@ def discover_aihub_files(data_dir: str) -> List[Dict]:
                 meta = json.load(f)
 
             # ── 텍스트 추출 ───────────────────────────────────
-            # AIHub 데이터셋마다 키 구조가 다를 수 있으므로 여러 경로 시도
+            # 실제 키: "Transcript" (대문자 T)
             text = (
-                meta.get("transcription", {}).get("kor")
+                meta.get("Transcript")
+                or meta.get("transcript")
+                or meta.get("transcription", {}).get("kor")
                 or meta.get("발화내용")
                 or meta.get("text")
-                or meta.get("transcript")
             )
             if not text:
                 continue
 
-            # ── 대응하는 오디오 파일 탐색 ────────────────────
-            # JSON과 같은 폴더 or 상위/하위 폴더에서 같은 이름 탐색
-            audio_path = None
-            stem = jf.stem  # 확장자 제외 파일명
+            # ── 오디오 파일 탐색 ──────────────────────────────
+            # 1순위: JSON의 File_id 필드 사용
+            file_id = meta.get("File_id", "")
+            audio_path = audio_index.get(file_id)
 
-            # 1순위: 같은 폴더
-            for ext in audio_exts:
-                candidate = jf.parent / (stem + ext)
-                if candidate.exists():
-                    audio_path = candidate
-                    break
-
-            # 2순위: 라벨링데이터 → 원천데이터 경로 치환
+            # 2순위: JSON 파일명과 동일한 wav 탐색
             if audio_path is None:
-                audio_dir = str(jf.parent).replace("라벨링데이터", "원천데이터")
-                for ext in audio_exts:
-                    candidate = Path(audio_dir) / (stem + ext)
+                audio_path = audio_index.get(jf.stem + ".wav")
+
+            # 3순위: 라벨링데이터_250331_add → 원천데이터 경로 치환
+            if audio_path is None:
+                audio_dir = str(jf.parent).replace(
+                    "라벨링데이터_250331_add", "원천데이터"
+                ).replace(
+                    "라벨링데이터", "원천데이터"
+                )
+                for ext in [".wav", ".flac", ".mp3"]:
+                    candidate = Path(audio_dir) / (jf.stem + ext)
                     if candidate.exists():
                         audio_path = candidate
                         break
