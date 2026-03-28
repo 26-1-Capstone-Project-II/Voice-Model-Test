@@ -1,0 +1,80 @@
+{
+  "added_tokens_decoder": {
+    "0": {
+      "content": "|",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "1203": {
+      "content": "[UNK]",
+      "lstrip": true,
+      "normalized": false,
+      "rstrip": true,
+      "single_word": false,
+      "special": false
+    },
+    "1204": {
+      "content": "[PAD]",
+      "lstrip": true,
+      "normalized": false,
+      "rstrip": true,
+      "single_word": false,
+      "special": false
+    },
+    "1205": {
+      "content": "<s>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "1206": {
+      "content": "</s>",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "1207": {
+      "content": "{'content': '<s>', 'single_word': False, 'lstrip': False, 'rstrip': False, 'normalized': True}",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    },
+    "1208": {
+      "content": "{'content': '</s>', 'single_word': False, 'lstrip': False, 'rstrip': False, 'normalized': True}",
+      "lstrip": false,
+      "normalized": false,
+      "rstrip": false,
+      "single_word": false,
+      "special": true
+    }
+  },
+  "backend": "custom",
+  "bos_token": "<s>",
+  "do_lower_case": false,
+  "eos_token": "</s>",
+  "extra_special_tokens": [
+    "{'content': '<s>', 'single_word': False, 'lstrip': False, 'rstrip': False, 'normalized': True}",
+    "{'content': '</s>', 'single_word': False, 'lstrip': False, 'rstrip': False, 'normalized': True}"
+  ],
+  "is_local": false,
+  "model_max_length": 1000000000000000019884624838656,
+  "model_specific_special_tokens": {
+    "word_delimiter_token": "|"
+  },
+  "pad_token": "[PAD]",
+  "processor_class": "Wav2Vec2Processor",
+  "replace_word_delimiter_char": " ",
+  "target_lang": null,
+  "tokenizer_class": "Wav2Vec2CTCTokenizer",
+  "unk_token": "[UNK]",
+  "word_delimiter_token": "|"
+}
