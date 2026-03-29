@@ -188,18 +188,34 @@ def discover_aihub_files(data_dir: str) -> List[Dict]:
 
 
 def load_audio(path: str) -> Optional[np.ndarray]:
-    """오디오 파일을 16kHz mono numpy 배열로 로드합니다."""
-    import librosa
+    """오디오 파일을 16kHz mono numpy 배열로 로드합니다.
+    soundfile로 빠르게 읽고 scipy로 리샘플링합니다.
+    """
     try:
-        audio, _ = librosa.load(path, sr=TARGET_SR, mono=True)
+        import soundfile as sf
+        from scipy.signal import resample_poly
+        from math import gcd
+
+        audio, sr = sf.read(path, dtype="float32", always_2d=True)
+        audio = audio.mean(axis=1)  # stereo → mono
+
+        # 리샘플링 (48kHz → 16kHz 등)
+        if sr != TARGET_SR:
+            g = gcd(TARGET_SR, sr)
+            audio = resample_poly(audio, TARGET_SR // g, sr // g)
+
+        audio = audio.astype(np.float32)
         duration = len(audio) / TARGET_SR
+
         if duration < MIN_DURATION:
             return None
+
+        # 긴 파일은 앞부분만 사용
         if duration > MAX_DURATION:
-            # 긴 파일은 앞부분 MAX_DURATION 초만 잘라서 사용
             audio = audio[:int(MAX_DURATION * TARGET_SR)]
+
         return audio
-    except Exception as e:
+    except Exception:
         return None
 
 
