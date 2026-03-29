@@ -241,11 +241,6 @@ def apply_g2p(text: str) -> str:
 
 @dataclass
 class DataCollatorCTCWithPadding:
-    """
-    CTC 학습에서 배치 내 시퀀스 길이가 다를 때 패딩을 수행합니다.
-    - input_values : 오디오 특징 (우측에 0 패딩)
-    - labels       : 텍스트 토큰 (우측에 -100 패딩)
-    """
     processor: object
     padding: Union[bool, str] = True
 
@@ -262,6 +257,9 @@ class DataCollatorCTCWithPadding:
             padding=self.padding,
             return_tensors="pt",
         )
+
+        # 모델에 필요한 키만 유지 (input_ids 등 불필요한 키 제거)
+        batch = {"input_values": batch["input_values"]}
 
         # ── 라벨 패딩 (-100으로 마스킹) ──────────────────────
         label_list = [f["labels"] for f in features]
@@ -465,7 +463,6 @@ def finetune(args):
         args               = training_args,
         train_dataset      = train_dataset,
         eval_dataset       = eval_dataset,
-        processing_class   = processor.feature_extractor,  # tokenizer 대신 사용
         data_collator      = data_collator,
         compute_metrics    = compute_metrics,
     )
