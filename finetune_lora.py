@@ -243,9 +243,8 @@ def apply_g2p(text: str) -> str:
 class DataCollatorCTCWithPadding:
     """
     CTC 학습에서 배치 내 시퀀스 길이가 다를 때 패딩을 수행합니다.
-
     - input_values : 오디오 특징 (우측에 0 패딩)
-    - labels       : 텍스트 토큰 (우측에 -100 패딩 — CrossEntropy 무시값)
+    - labels       : 텍스트 토큰 (우측에 -100 패딩)
     """
     processor: object
     padding: Union[bool, str] = True
@@ -264,20 +263,15 @@ class DataCollatorCTCWithPadding:
             return_tensors="pt",
         )
 
-        # ── 라벨 패딩 ─────────────────────────────────────────
-        label_features = [{"input_ids": f["labels"]} for f in features]
-        with self.processor.as_target_processor():
-            labels_batch = self.processor.pad(
-                label_features,
-                padding=self.padding,
-                return_tensors="pt",
-            )
+        # ── 라벨 패딩 (-100으로 마스킹) ──────────────────────
+        label_list = [f["labels"] for f in features]
+        max_len    = max(len(l) for l in label_list)
+        labels_padded = []
+        for lbl in label_list:
+            pad_len = max_len - len(lbl)
+            labels_padded.append(lbl + [-100] * pad_len)
 
-        # -100 으로 마스킹 (CTC loss 계산 시 무시)
-        labels = labels_batch["input_ids"].masked_fill(
-            labels_batch.attention_mask.ne(1), -100
-        )
-        batch["labels"] = labels
+        batch["labels"] = torch.tensor(labels_padded, dtype=torch.long)
 
         return batch
 
