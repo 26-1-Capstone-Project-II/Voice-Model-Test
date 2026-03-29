@@ -345,7 +345,7 @@ def finetune(args):
     # ── 5-3. LoRA 적용 ────────────────────────────────────────
     print("\n[3/6] LoRA 어댑터 설정 중...")
     lora_config = LoraConfig(
-        task_type      = TaskType.TOKEN_CLS,   # CTC는 토큰 분류와 유사
+        # task_type      = TaskType.TOKEN_CLS,   # CTC는 토큰 분류와 유사
         **LORA_CONFIG,
         inference_mode = False,
     )
