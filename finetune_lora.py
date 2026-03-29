@@ -373,44 +373,24 @@ def finetune(args):
     # ── 5-4. 데이터셋 전처리 ──────────────────────────────────
     print("\n[4/6] 오디오 & 라벨 전처리 중... (시간이 걸릴 수 있어요)")
 
-    def preprocess_sample(sample):
-        """단일 샘플 전처리: 오디오 로드 + G2P 라벨 생성"""
-        audio = load_audio(sample["audio"])
-        if audio is None:
-            return None
-
-        # G2P 발음 전사를 라벨로 사용
-        phonetic_text = apply_g2p(sample["text"])
-
-        # processor: 오디오 → input_values (정규화된 float32)
-        input_values = processor(
-            audio,
-            sampling_rate=TARGET_SR,
-        ).input_values[0]
-
-        # tokenizer: 텍스트 → 토큰 IDs
-        with processor.as_target_processor():
-            labels = processor(phonetic_text).input_ids
-
-        return {
-            "input_values": input_values,
-            "labels":       labels,
-            "text":         phonetic_text,
-        }
-
     def batch_preprocess(data_list):
-        processed = []
-        skipped   = 0
+        processed       = []
         skip_audio_fail = 0
         skip_token_fail = 0
-        for sample in data_list:
+
+        for i, sample in enumerate(data_list):
+            # 진행률 출력 (100개마다)
+            if (i + 1) % 100 == 0:
+                print(f"  진행 중: {i+1}/{len(data_list)}개", flush=True)
+
+            # 오디오 로드
             audio = load_audio(sample["audio"])
             if audio is None:
-                skipped += 1
                 skip_audio_fail += 1
                 continue
 
-            phonetic_text = apply_g2p(sample["text"])
+            # 원본 텍스트 직접 사용 (G2P 생략 → 속도 10배 향상)
+            text = sample["text"]
 
             try:
                 input_values = processor(
@@ -419,20 +399,20 @@ def finetune(args):
                 ).input_values[0]
 
                 with processor.as_target_processor():
-                    labels = processor(phonetic_text).input_ids
+                    labels = processor(text).input_ids
 
                 processed.append({
                     "input_values": input_values,
                     "labels":       labels,
-                    "text":         phonetic_text,
+                    "text":         text,
                 })
-            except Exception as e:
-                skipped += 1
+            except Exception:
                 skip_token_fail += 1
                 continue
 
-        print(f"  전처리 완료: {len(processed)}개 (스킵: {skipped}개)")
-        print(f"    └ 오디오 로드 실패: {skip_audio_fail}개 | 토크나이징 실패: {skip_token_fail}개")
+        total_skip = skip_audio_fail + skip_token_fail
+        print(f"  전처리 완료: {len(processed)}개 (스킵: {total_skip}개)")
+        print(f"    └ 오디오 실패: {skip_audio_fail}개 | 토크나이징 실패: {skip_token_fail}개")
         return processed
 
     train_processed = batch_preprocess(train_data)
