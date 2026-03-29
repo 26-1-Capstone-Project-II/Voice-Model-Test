@@ -318,7 +318,6 @@ def finetune(args):
         Trainer,
     )
     from peft import LoraConfig, get_peft_model, TaskType
-    from datasets import Dataset
 
     # ── 5-1. 데이터 수집 ──────────────────────────────────────
     print("\n[1/6] 데이터셋 탐색 중...")
@@ -373,53 +372,63 @@ def finetune(args):
     # ── 5-4. 데이터셋 전처리 ──────────────────────────────────
     print("\n[4/6] 오디오 & 라벨 전처리 중... (시간이 걸릴 수 있어요)")
 
-    def batch_preprocess(data_list):
-        processed       = []
-        skip_audio_fail = 0
-        skip_token_fail = 0
+    class SpeechDataset(torch.utils.data.Dataset):
+        """
+        PyTorch Dataset — 오디오를 매번 로드 (메모리 절약)
+        HuggingFace Dataset 대신 사용하는 이유:
+          pyarrow int32 한계(2GB)로 인해 114초짜리 오디오 배열을
+          통째로 올리면 ArrowInvalid 오류 발생 → 파일 경로만 저장 후
+          __getitem__ 에서 그때그때 로드
+        """
+        def __init__(self, samples, processor, desc=""):
+            self.valid = []
+            skip_audio = 0
+            skip_token = 0
 
-        for i, sample in enumerate(data_list):
-            # 진행률 출력 (100개마다)
-            if (i + 1) % 100 == 0:
-                print(f"  진행 중: {i+1}/{len(data_list)}개", flush=True)
+            for i, sample in enumerate(samples):
+                if (i + 1) % 100 == 0:
+                    print(f"  [{desc}] 검증 중: {i+1}/{len(samples)}개", flush=True)
 
-            # 오디오 로드
-            audio = load_audio(sample["audio"])
+                # 라벨만 미리 토크나이징 (텍스트는 작으므로 메모리 OK)
+                try:
+                    with processor.as_target_processor():
+                        labels = processor(sample["text"]).input_ids
+                    if len(labels) == 0:
+                        skip_token += 1
+                        continue
+                    self.valid.append({
+                        "audio_path": sample["audio"],
+                        "labels":     labels,
+                        "text":       sample["text"],
+                    })
+                except Exception:
+                    skip_token += 1
+
+            print(f"  [{desc}] 완료: {len(self.valid)}개 "
+                  f"(오디오 실패: {skip_audio}개 | 토크나이징 실패: {skip_token}개)")
+
+        def __len__(self):
+            return len(self.valid)
+
+        def __getitem__(self, idx):
+            item = self.valid[idx]
+            audio = load_audio(item["audio_path"])
             if audio is None:
-                skip_audio_fail += 1
-                continue
+                # 로드 실패 시 무음 대체
+                audio = np.zeros(TARGET_SR, dtype=np.float32)
 
-            # 원본 텍스트 직접 사용 (G2P 생략 → 속도 10배 향상)
-            text = sample["text"]
+            input_values = processor(
+                audio,
+                sampling_rate=TARGET_SR,
+            ).input_values[0]
 
-            try:
-                input_values = processor(
-                    audio,
-                    sampling_rate=TARGET_SR,
-                ).input_values[0]
+            return {
+                "input_values": input_values,
+                "labels":       item["labels"],
+            }
 
-                with processor.as_target_processor():
-                    labels = processor(text).input_ids
-
-                processed.append({
-                    "input_values": input_values,
-                    "labels":       labels,
-                    "text":         text,
-                })
-            except Exception:
-                skip_token_fail += 1
-                continue
-
-        total_skip = skip_audio_fail + skip_token_fail
-        print(f"  전처리 완료: {len(processed)}개 (스킵: {total_skip}개)")
-        print(f"    └ 오디오 실패: {skip_audio_fail}개 | 토크나이징 실패: {skip_token_fail}개")
-        return processed
-
-    train_processed = batch_preprocess(train_data)
-    eval_processed  = batch_preprocess(eval_data)
-
-    train_dataset = Dataset.from_list(train_processed)
-    eval_dataset  = Dataset.from_list(eval_processed)
+    train_dataset = SpeechDataset(train_data, processor, desc="학습")
+    eval_dataset  = SpeechDataset(eval_data,  processor, desc="검증")
 
     # ── 5-5. 학습 설정 ────────────────────────────────────────
     print("\n[5/6] 학습 설정 구성 중...")
