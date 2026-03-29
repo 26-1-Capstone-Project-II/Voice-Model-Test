@@ -193,10 +193,13 @@ def load_audio(path: str) -> Optional[np.ndarray]:
     try:
         audio, _ = librosa.load(path, sr=TARGET_SR, mono=True)
         duration = len(audio) / TARGET_SR
-        if duration < MIN_DURATION or duration > MAX_DURATION:
-            return None  # 너무 짧거나 긴 파일 스킵
+        if duration < MIN_DURATION:
+            return None
+        if duration > MAX_DURATION:
+            # 긴 파일은 앞부분 MAX_DURATION 초만 잘라서 사용
+            audio = audio[:int(MAX_DURATION * TARGET_SR)]
         return audio
-    except Exception:
+    except Exception as e:
         return None
 
 
@@ -382,13 +385,38 @@ def finetune(args):
     def batch_preprocess(data_list):
         processed = []
         skipped   = 0
+        skip_audio_fail = 0
+        skip_token_fail = 0
         for sample in data_list:
-            result = preprocess_sample(sample)
-            if result is not None:
-                processed.append(result)
-            else:
+            audio = load_audio(sample["audio"])
+            if audio is None:
                 skipped += 1
+                skip_audio_fail += 1
+                continue
+
+            phonetic_text = apply_g2p(sample["text"])
+
+            try:
+                input_values = processor(
+                    audio,
+                    sampling_rate=TARGET_SR,
+                ).input_values[0]
+
+                with processor.as_target_processor():
+                    labels = processor(phonetic_text).input_ids
+
+                processed.append({
+                    "input_values": input_values,
+                    "labels":       labels,
+                    "text":         phonetic_text,
+                })
+            except Exception as e:
+                skipped += 1
+                skip_token_fail += 1
+                continue
+
         print(f"  전처리 완료: {len(processed)}개 (스킵: {skipped}개)")
+        print(f"    └ 오디오 로드 실패: {skip_audio_fail}개 | 토크나이징 실패: {skip_token_fail}개")
         return processed
 
     train_processed = batch_preprocess(train_data)
@@ -424,24 +452,23 @@ def finetune(args):
         greater_is_better           = False,  # CER은 낮을수록 좋음
         logging_steps               = 50,
         logging_dir                 = str(output_dir / "logs"),
-        dataloader_num_workers      = TRAIN_CONFIG["dataloader_num_workers"],
-        report_to                   = "none",   # wandb 등 외부 로깅 비활성화
+        dataloader_num_workers      = 0,          # 멀티프로세싱 비활성화 (안정성)
+        report_to                   = "none",     # wandb 등 외부 로깅 비활성화
         push_to_hub                 = False,
-        group_by_length             = True,     # 비슷한 길이의 샘플끼리 묶어 패딩 최소화
-        length_column_name          = "input_values",
+        group_by_length             = False,      # 샘플 수 적을 때 IndexError 방지
     )
 
     data_collator    = DataCollatorCTCWithPadding(processor=processor)
     compute_metrics  = build_compute_metrics(processor)
 
     trainer = Trainer(
-        model           = model,
-        args            = training_args,
-        train_dataset   = train_dataset,
-        eval_dataset    = eval_dataset,
-        tokenizer       = processor.feature_extractor,
-        data_collator   = data_collator,
-        compute_metrics = compute_metrics,
+        model              = model,
+        args               = training_args,
+        train_dataset      = train_dataset,
+        eval_dataset       = eval_dataset,
+        processing_class   = processor.feature_extractor,  # tokenizer 대신 사용
+        data_collator      = data_collator,
+        compute_metrics    = compute_metrics,
     )
 
     # ── 5-6. 학습 시작 ────────────────────────────────────────
