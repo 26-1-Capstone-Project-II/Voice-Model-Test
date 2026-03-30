@@ -62,9 +62,10 @@ LORA_CONFIG = dict(
 
 # ── 학습 하이퍼파라미터 ──────────────────────────────────────
 TRAIN_CONFIG = dict(
-    learning_rate          = 1e-5,    # 손실 폭발 방지 (1e-4 → 1e-5)
+    learning_rate          = 3e-5,    # 기울기 폭발 방지 (1e-4 → 3e-5)
     warmup_ratio           = 0.1,
     weight_decay           = 0.01,
+    max_grad_norm          = 1.0,     # 기울기 폭발(NaN) 안전장치
     fp16                   = False,   # cuDNN 1D-Conv 버그 방어
     gradient_checkpointing = False,   # freeze_feature_encoder와 충돌 방어
     dataloader_num_workers = 0,
@@ -317,6 +318,12 @@ def finetune(args):
     )
     from peft import LoraConfig, get_peft_model, TaskType
 
+    # ── cuDNN 비활성화 (Conv1d 초기화 버그 방어) ──────────────
+    torch.backends.cudnn.enabled = False
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print(f"  GPU: {torch.cuda.get_device_name(0)} | cuDNN 비활성화 모드")
+
     # ── 5-1. 데이터 수집 ──────────────────────────────────────
     print("\n[1/6] 데이터셋 탐색 중...")
     samples = discover_aihub_files(args.data_dir)
@@ -446,6 +453,7 @@ def finetune(args):
         learning_rate               = TRAIN_CONFIG["learning_rate"],
         warmup_ratio                = TRAIN_CONFIG["warmup_ratio"],
         weight_decay                = TRAIN_CONFIG["weight_decay"],
+        max_grad_norm               = TRAIN_CONFIG["max_grad_norm"],
         fp16                        = use_fp16,
         gradient_checkpointing      = TRAIN_CONFIG["gradient_checkpointing"],
         eval_strategy               = "epoch",
