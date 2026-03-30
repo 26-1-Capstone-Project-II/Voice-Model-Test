@@ -62,12 +62,12 @@ LORA_CONFIG = dict(
 
 # ── 학습 하이퍼파라미터 ──────────────────────────────────────
 TRAIN_CONFIG = dict(
-    learning_rate       = 1e-4,
-    warmup_ratio        = 0.1,   # 전체 스텝의 10%를 워밍업
-    weight_decay        = 0.01,
-    fp16                = True,   # GPU 메모리 절약 (CUDA 필수)
-    gradient_checkpointing = True,  # VRAM 절약 (속도 ↔ 메모리 트레이드오프)
-    dataloader_num_workers = 4,
+    learning_rate          = 1e-5,    # 손실 폭발 방지 (1e-4 → 1e-5)
+    warmup_ratio           = 0.1,
+    weight_decay           = 0.01,
+    fp16                   = False,   # cuDNN 1D-Conv 버그 방어
+    gradient_checkpointing = False,   # freeze_feature_encoder와 충돌 방어
+    dataloader_num_workers = 0,
 )
 
 # ══════════════════════════════════════════════════════════════
@@ -294,6 +294,12 @@ def build_compute_metrics(processor):
         label_str = processor.batch_decode(pred.label_ids, group_tokens=False)
 
         cer = compute_cer(label_str, pred_str)
+
+        # 샘플 출력 (첫 번째 예시만)
+        print(f"\n  [CER 평가] {round(cer * 100, 2)}%")
+        print(f"  정답  : {label_str[0][:50]}")
+        print(f"  예측  : {pred_str[0][:50]}\n")
+
         return {"cer": round(cer, 4)}
 
     return compute_metrics
@@ -345,7 +351,7 @@ def finetune(args):
     # ── 5-3. LoRA 적용 ────────────────────────────────────────
     print("\n[3/6] LoRA 어댑터 설정 중...")
     lora_config = LoraConfig(
-        # task_type      = TaskType.TOKEN_CLS,   # CTC는 토큰 분류와 유사
+        # task_type 제거 — Wav2Vec2는 음성 모델이므로 명시하면 input_ids 주입됨
         **LORA_CONFIG,
         inference_mode = False,
     )
@@ -447,7 +453,7 @@ def finetune(args):
         load_best_model_at_end      = True,
         metric_for_best_model       = "cer",
         greater_is_better           = False,  # CER은 낮을수록 좋음
-        logging_steps               = 50,
+        logging_steps               = 10,   # 10스텝마다 loss 출력
         logging_dir                 = str(output_dir / "logs"),
         dataloader_num_workers      = 0,          # 멀티프로세싱 비활성화 (안정성)
         report_to                   = "none",     # wandb 등 외부 로깅 비활성화
@@ -468,12 +474,14 @@ def finetune(args):
     )
 
     # ── 5-6. 학습 시작 ────────────────────────────────────────
+    cuda_available = torch.cuda.is_available()
     print(f"\n[6/6] LoRA 파인튜닝 시작!")
     print(f"  출력 경로  : {output_dir}")
     print(f"  에폭       : {args.epochs}")
     print(f"  배치 크기  : {args.batch_size} × {args.grad_accum} (누적)")
-    print(f"  FP16       : {'✅' if use_fp16 else '❌ (CUDA 없음)'}")
-    print(f"  gradient_checkpointing: ✅ (VRAM 절약)\n")
+    print(f"  GPU        : {'✅ ' + torch.cuda.get_device_name(0) if cuda_available else '❌ CPU 모드'}")
+    print(f"  FP16       : {'✅' if use_fp16 else '❌ 비활성화 (cuDNN 버그 방어)'}")
+    print(f"  gradient_checkpointing: {'✅' if TRAIN_CONFIG['gradient_checkpointing'] else '❌ 비활성화'}\n")
 
     trainer.train()
 
