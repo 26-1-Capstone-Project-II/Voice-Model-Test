@@ -1,17 +1,13 @@
 """
-밍글리 (Mingly) — 2단계 LoRA 파인튜닝 (발음평가 G2P 버전)
+밍글리 (Mingly) — 2단계 LoRA 파인튜닝 (발음평가용 G2P + 진행률 UI 버전)
 ======================================================
-베이스 모델 : w11wo/wav2vec2-xls-r-300m-korean
-PEFT 기법   : LoRA (Low-Rank Adaptation)
-데이터셋    : AIHub 구음장애 음성인식 데이터 (dataSetSn=608)
-목표        : 구음장애 음성에 특화된 발음 전사 모델 학습 (소리나는 대로 출력)
-
 [적용된 트러블슈팅 황금 세팅]
   1. cuDNN 에러 방지 (torch.backends.cudnn.enabled = False)
   2. 메모리 최적화 (MAX_DURATION = 20.0)
   3. 역전파 단절 버그 방지 (gradient_checkpointing = False)
   4. 텍스트 특수기호([UNK]) 정규식 정제 (re.sub) + G2P(소리나는대로) 적용
   5. LoRA 맞춤형 학습률(3e-4) 및 기울기 폭발 방지(max_grad_norm=1.0)
+  6. 성가신 경고 메시지 차단 & tqdm 진행률 바 추가
 """
 
 import os
@@ -25,22 +21,23 @@ from typing import Dict, List, Optional, Union
 
 import torch
 import numpy as np
+from tqdm import tqdm  # 🚨 진행률 바를 위한 패키지 추가
 
-# 🚨 [트러블슈팅 1] 원흉인 cuDNN 강제 비활성화
+# 원흉인 cuDNN 강제 비활성화
 torch.backends.cudnn.enabled = False
 
-warnings.filterwarnings("ignore", category=UserWarning)
+# 🚨 성가신 Overflow 경고 등 모든 경고 메시지 차단
+warnings.filterwarnings("ignore")
 
 # ══════════════════════════════════════════════════════════════
-# 0. 설정값 (argparse로 덮어쓰기 가능)
+# 0. 설정값
 # ══════════════════════════════════════════════════════════════
 
 BASE_MODEL_ID = "w11wo/wav2vec2-xls-r-300m-korean"
 TARGET_SR     = 16_000   
-MAX_DURATION  = 20.0     # 🚨 [트러블슈팅 2] VRAM 확보를 위해 20초 제한
+MAX_DURATION  = 20.0     
 MIN_DURATION  = 0.5      
 
-# ── LoRA 하이퍼파라미터 ──────────────────────────────────────
 LORA_CONFIG = dict(
     r              = 16,      
     lora_alpha     = 32,      
@@ -49,13 +46,12 @@ LORA_CONFIG = dict(
     bias           = "none",
 )
 
-# ── 학습 하이퍼파라미터 ──────────────────────────────────────
 TRAIN_CONFIG = dict(
-    learning_rate       = 3e-4,   # 🚨 [트러블슈팅 5] LoRA 국룰 보폭
+    learning_rate       = 3e-4,   
     warmup_ratio        = 0.1,   
     weight_decay        = 0.01,
-    fp16                = False,  # 🚨 [트러블슈팅 1] cuDNN 충돌 방지
-    gradient_checkpointing = False, # 🚨 [트러블슈팅 3] 역전파 단절 방지
+    fp16                = False,  
+    gradient_checkpointing = False, 
     dataloader_num_workers = 4,
 )
 
@@ -71,7 +67,8 @@ def check_and_install():
         "librosa":      "librosa",
         "jiwer":        "jiwer",
         "accelerate":   "accelerate>=0.26.0",
-        "kss":          "kss", # G2P를 위한 kss 패키지
+        "kss":          "kss", 
+        "tqdm":         "tqdm",
     }
     missing = []
     for pkg, pip_name in required.items():
@@ -92,7 +89,6 @@ def check_and_install():
 # ══════════════════════════════════════════════════════════════
 
 def apply_g2p(text: str) -> str:
-    """맞춤법 텍스트를 소리나는 대로(발음 전사) 변환합니다."""
     try:
         from kss import Kss
         g2p = Kss("g2p")
@@ -107,7 +103,6 @@ def discover_aihub_files(data_dir: str) -> List[Dict]:
     json_files = list(data_dir.rglob("*.json"))
     print(f"  JSON 라벨 파일 발견: {len(json_files)}개")
 
-    print(f"  오디오 파일 인덱싱 중...")
     audio_index = {}
     for wav in data_dir.rglob("*.wav"):
         audio_index[wav.name] = wav
@@ -115,12 +110,13 @@ def discover_aihub_files(data_dir: str) -> List[Dict]:
         audio_index[flac.name] = flac
     print(f"  오디오 파일 인덱스: {len(audio_index)}개")
 
-    for jf in json_files:
+    print("\n  [주의] G2P 변환 작업이 진행 중입니다. (약 5~10분 소요)")
+    # 🚨 tqdm으로 게이지 바 추가! 얼마나 남았는지 확인 가능
+    for jf in tqdm(json_files, desc="  G2P 텍스트 변환"):
         try:
             with open(jf, encoding="utf-8") as f:
                 meta = json.load(f)
 
-            # ── 텍스트 추출 ───────────────────────────────────
             text = (
                 meta.get("Transcript")
                 or meta.get("transcript")
@@ -131,17 +127,14 @@ def discover_aihub_files(data_dir: str) -> List[Dict]:
             if not text:
                 continue
 
-            # 🚨 1단계: 특수기호 제거 (문장부호 등 찌꺼기 제거)
             text = re.sub(r'[^가-힣a-zA-Z0-9\s]', '', text)
             text = re.sub(r'\s+', ' ', text).strip()
             
             if not text: 
                 continue
 
-            # 🚨 2단계: 소리나는 대로 변환 (G2P 적용) - 발음 평가용 핵심!
             text = apply_g2p(text)
 
-            # ── 오디오 파일 탐색 ──────────────────────────────
             file_id = meta.get("File_id", "")
             audio_path = audio_index.get(file_id)
 
@@ -168,7 +161,7 @@ def discover_aihub_files(data_dir: str) -> List[Dict]:
         except Exception:
             continue
 
-    print(f"  유효한 (오디오, 라벨) 쌍: {len(samples)}개")
+    print(f"\n  유효한 (오디오, 라벨) 쌍: {len(samples)}개")
     return samples
 
 def load_audio(path: str) -> Optional[np.ndarray]:
@@ -269,7 +262,7 @@ def finetune(args):
     )
     from peft import LoraConfig, get_peft_model
 
-    print("\n[1/6] 데이터셋 탐색 중... (G2P 변환으로 인해 약간의 시간이 소요될 수 있습니다)")
+    print("\n[1/6] 데이터셋 탐색 중...")
     samples = discover_aihub_files(args.data_dir)
 
     if len(samples) == 0:
@@ -313,13 +306,10 @@ def finetune(args):
     class SpeechDataset(torch.utils.data.Dataset):
         def __init__(self, samples, processor, desc=""):
             self.valid = []
-            skip_audio = 0
             skip_token = 0
 
-            for i, sample in enumerate(samples):
-                if (i + 1) % 100 == 0:
-                    print(f"  [{desc}] 검증 중: {i+1}/{len(samples)}개", flush=True)
-
+            # 🚨 여기도 tqdm 적용하여 진행률 표시!
+            for sample in tqdm(samples, desc=f"  [{desc}] 라벨 토크나이징"):
                 try:
                     with processor.as_target_processor():
                         labels = processor(sample["text"]).input_ids
@@ -376,10 +366,7 @@ def finetune(args):
         weight_decay                = TRAIN_CONFIG["weight_decay"],
         fp16                        = use_fp16,
         gradient_checkpointing      = TRAIN_CONFIG["gradient_checkpointing"],
-        
-        # 🚨 [트러블슈팅 5] 모델 멘붕(NaN) 방지용 안전장치
         max_grad_norm               = 1.0, 
-        
         eval_strategy               = "epoch",
         save_strategy               = "epoch",
         load_best_model_at_end      = True,
