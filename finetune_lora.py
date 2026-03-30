@@ -321,12 +321,8 @@ def finetune(args):
     # ── CUDA 설정 ─────────────────────────────────────────────
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-        torch.backends.cudnn.enabled       = True
-        torch.backends.cudnn.benchmark     = False
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32       = False
-        print(f"  GPU: {torch.cuda.get_device_name(0)} | TF32 비활성화")
+        torch.backends.cudnn.enabled = False  # Conv1d cuDNN 버그 방어
+        print(f"  GPU: {torch.cuda.get_device_name(0)} | cuDNN 비활성화")
 
     # ── 5-1. 데이터 수집 ──────────────────────────────────────
     print("\n[1/6] 데이터셋 탐색 중...")
