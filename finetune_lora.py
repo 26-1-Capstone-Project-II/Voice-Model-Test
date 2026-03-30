@@ -47,7 +47,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 BASE_MODEL_ID = "w11wo/wav2vec2-xls-r-300m-korean"
 TARGET_SR     = 16_000   # wav2vec2 요구 샘플레이트
-MAX_DURATION  = 120.0    # 최대 오디오 길이 (초) — AIHub 데이터 최대 114초 대응
+MAX_DURATION  = 20.0     # 최대 오디오 길이 (초) — cuDNN VRAM 버그 방어
 MIN_DURATION  = 0.5      # 최소 오디오 길이 (초) — 이 이하는 스킵
 
 # ── LoRA 하이퍼파라미터 ──────────────────────────────────────
