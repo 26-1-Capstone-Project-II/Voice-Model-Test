@@ -1,9 +1,9 @@
 """
 언어청각장애 전용 파인튜닝 (100% 전체 데이터셋 학습용)
 ====================================================
-리눅스 서버(Ubuntu) 환경에 맞춰 경로와 실행 옵션을 최적화했습니다.
+리눅스 서버 경로 오타 수정 및 디버깅 로그 강화 버전
 
-실행 명령어 (tmux 안에서 복사해서 사용):
+실행 명령어:
     CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python finetune_full.py
 """
 
@@ -11,6 +11,7 @@ import io
 import json
 import argparse
 import random
+import os
 from pathlib import Path
 from dataclasses import dataclass
 from collections import defaultdict, Counter
@@ -36,20 +37,20 @@ from korean_g2p_nomecab import load_g2p
 torch.backends.cudnn.enabled = False
 
 # ────────────────────────────────────────────
-# ⚙️ 경로 설정 (리눅스 서버 절대 경로로 수정)
+# ⚙️ 경로 설정 (리눅스 서버 절대 경로)
 # ────────────────────────────────────────────
 
 BASE_MODEL = "w11wo/wav2vec2-xls-r-300m-korean"
 TARGET_SR  = 16000
 MAX_SEC    = 10.0
 
-# 🚨 [수정 포인트 1] 리눅스 서버의 실제 사용자 홈 디렉토리를 사용합니다.
+# 서버 내 실제 사용자 홈 디렉토리
 HOME = Path.home() # /home/slim
 
-# 데이터 루트 경로를 리눅스 포맷으로 수정
+# [데이터 루트] 띄어쓰기 포함된 폴더명 대응
 DATA_ROOT = HOME / "mingly_workspace" / "구음장애 음성인식 데이터" / "01.데이터" / "1.Training"
 
-# 100% 데이터셋 세부 경로 (띄어쓰기 포함된 폴더명 대응)
+# [세부 경로] 오타 수정 완료: 언어청각장애
 DEFAULT_WAV_DIR   = DATA_ROOT / "원천데이터" / "TS02_언어청각장애"
 DEFAULT_JSON_DIR  = DATA_ROOT / "라벨링데이터_250331_add" / "TL02_언어청각장애"
 
@@ -58,19 +59,44 @@ DEFAULT_OUTPUT_DIR = HOME / "mingly_workspace" / "Voice-Model-Test" / "best_mode
 
 
 # ────────────────────────────────────────────
-# 1. WAV ↔ JSON 매칭
+# 1. WAV ↔ JSON 매칭 로직 (디버깅 강화)
 # ────────────────────────────────────────────
 
-def load_pairs(wav_dir: Path, json_dir: Path, g2p) -> dict:
-    print(f"\n🔍 [데이터 탐색]")
-    print(f"   📂 WAV: {wav_dir}")
-    print(f"   📂 JSON: {json_dir}")
+def verify_and_debug_paths(wav_dir: Path, json_dir: Path):
+    """경로 존재 여부를 확인하고, 없으면 서버의 실제 폴더 구조를 출력합니다."""
+    for d, label in [(wav_dir, "WAV"), (json_dir, "JSON")]:
+        if not d.exists():
+            print(f"\n❌ [경로 에러] {label} 폴더를 찾을 수 없습니다!")
+            print(f"   입력된 경로: {d}")
+            
+            # 상위 폴더까지는 존재하는지 확인하고 목록 출력
+            curr = d
+            while not curr.exists() and curr != curr.parent:
+                curr = curr.parent
+            
+            if curr.exists():
+                print(f"   💡 '{curr}' 폴더 안에 있는 실제 목록입니다. 여기서 이름을 확인하세요:")
+                try:
+                    for p in curr.iterdir():
+                        print(f"      - {p.name}")
+                except:
+                    print("      (권한 문제로 목록을 읽을 수 없습니다)")
+            return False
+    return True
 
-    # JSONL 파일(VAD 세그멘테이션 결과)이 있는지 확인
+def load_pairs(wav_dir: Path, json_dir: Path, g2p) -> list:
+    print(f"\n🔍 [데이터 탐색 시작]")
+    print(f"   📂 WAV 경로: {wav_dir}")
+    print(f"   📂 JSON 경로: {json_dir}")
+
+    if not verify_and_debug_paths(wav_dir, json_dir):
+        return None
+
+    # JSONL 파일 확인
     train_jsonl = json_dir / "train.jsonl"
     if train_jsonl.exists():
-        print(f"  📂 JSONL 데이터 감지 → 직접 로드 시작")
-        split = {"train": [], "validation": [], "test": []}
+        print(f"  📂 JSONL 데이터 감지 → 직접 로드")
+        all_data = []
         for split_name in ["train", "validation", "test"]:
             path = json_dir / f"{split_name}.jsonl"
             if not path.exists(): continue
@@ -78,14 +104,14 @@ def load_pairs(wav_dir: Path, json_dir: Path, g2p) -> dict:
                 for line in f:
                     obj = json.loads(line.strip())
                     if obj.get("label") and obj.get("wav_path"):
-                        split[split_name].append(obj)
-            print(f"  ✅ {split_name:12s}: {len(split[split_name]):,}개")
-        return split
+                        all_data.append(obj)
+        return all_data
 
-    # 파일 직접 매칭 (JSONL이 없을 경우)
+    # 일반 JSON 파일 매칭 (rglob)
+    print("  🔎 파일을 직접 검색 중입니다 (rglob)...")
     wav_index  = {f.stem: f for f in wav_dir.rglob("*.wav")}
     json_files = sorted(json_dir.rglob("*.json"))
-    print(f"  📦 파일 검색 결과: WAV {len(wav_index):,}개 / JSON {len(json_files):,}개")
+    print(f"  📦 검색 결과: WAV {len(wav_index):,}개 / JSON {len(json_files):,}개")
 
     pairs = []
     for jp in json_files:
@@ -97,7 +123,6 @@ def load_pairs(wav_dir: Path, json_dir: Path, g2p) -> dict:
             wav_path = wav_index.get(wav_stem)
             if wav_path is None: continue
             
-            # 발음 기호 변환 (G2P)
             label = g2p(transcript, descriptive=True).strip()
             pairs.append({
                 "wav_path": str(wav_path),
@@ -106,8 +131,11 @@ def load_pairs(wav_dir: Path, json_dir: Path, g2p) -> dict:
             })
         except: continue
     
-    print(f"  ✅ 매칭 성공: {len(pairs):,}개")
     return pairs
+
+# ────────────────────────────────────────────
+# 2. Dataset & Collator
+# ────────────────────────────────────────────
 
 def split_by_speaker(pairs, seed=42):
     if not pairs: return {"train": [], "validation": [], "test": []}
@@ -125,10 +153,6 @@ def split_by_speaker(pairs, seed=42):
         key = "train" if sp in train_sp else ("validation" if sp in val_sp else "test")
         split[key].extend(sp_pairs)
     return split
-
-# ────────────────────────────────────────────
-# 2. Dataset & Collator
-# ────────────────────────────────────────────
 
 class DysarthriaDataset(Dataset):
     def __init__(self, records, processor):
@@ -172,7 +196,7 @@ def make_compute_metrics(processor):
 # ────────────────────────────────────────────
 
 def train(wav_dir, json_dir, output_dir, batch_size, num_epochs, lr, grad_accum):
-    print(f"\n📥 모델 로딩: {BASE_MODEL}")
+    print(f"\n📥 모델 로드: {BASE_MODEL}")
     processor = Wav2Vec2Processor.from_pretrained(BASE_MODEL)
     model = Wav2Vec2ForCTC.from_pretrained(
         BASE_MODEL, ctc_loss_reduction="mean", pad_token_id=processor.tokenizer.pad_token_id
@@ -182,11 +206,11 @@ def train(wav_dir, json_dir, output_dir, batch_size, num_epochs, lr, grad_accum)
     g2p = load_g2p()
     result = load_pairs(wav_dir, json_dir, g2p)
     
-    if not result or (isinstance(result, dict) and not result["train"]):
-        print("❌ 에러: 데이터를 찾지 못했습니다. 경로 설정을 다시 확인하세요.")
+    if result is None or len(result) == 0:
+        print("\n❌ [학습 중단] 매칭된 데이터가 0개입니다. 위 로그를 보고 경로를 수정하세요.")
         return
 
-    split = result if isinstance(result, dict) else split_by_speaker(result)
+    split = split_by_speaker(result)
 
     train_ds = DysarthriaDataset(split["train"], processor)
     val_ds = DysarthriaDataset(split["validation"][:500], processor)
@@ -222,22 +246,21 @@ def train(wav_dir, json_dir, output_dir, batch_size, num_epochs, lr, grad_accum)
         callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
     )
 
-    print(f"\n🚀 100% 데이터셋 학습 시작! (총 {len(split['train']):,} 샘플)")
+    print(f"\n🚀 100% 데이터 학습 시작! (매칭된 데이터: {len(result):,}개)")
     trainer.train()
     
     best_path = Path(output_dir) / "best"
     trainer.save_model(str(best_path))
     processor.save_pretrained(str(best_path))
-    print(f"\n💾 최종 모델 저장 완료: {best_path}")
+    print(f"\n💾 최종 저장 완료: {best_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # 🚨 [수정 포인트 2] 리눅스용 기본 경로 주입
     parser.add_argument("--wav_dir",    default=str(DEFAULT_WAV_DIR))
     parser.add_argument("--json_dir",   default=str(DEFAULT_JSON_DIR))
     parser.add_argument("--output_dir", default=str(DEFAULT_OUTPUT_DIR))
     
-    # ⭐️ 10% 학습 성공 세팅값 유지
+    # ⭐️ 10% 성공 시 사용했던 하이퍼파라미터 적용
     parser.add_argument("--batch_size", type=int,   default=1)
     parser.add_argument("--num_epochs", type=int,   default=30)
     parser.add_argument("--grad_accum", type=int,   default=16)
