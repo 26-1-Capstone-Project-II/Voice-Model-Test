@@ -21,4 +21,6 @@ segmented_test*/
 # 환경
 .env
 venv/
-"@ | Out-File -FilePath .gitignore -Encoding utf8
+"@ | Out-File -FilePath .gitignore -Encoding utf8*.safetensors
+*.bin
+best_model/model.safetensors
