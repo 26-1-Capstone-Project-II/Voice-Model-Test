@@ -37,12 +37,7 @@ import numpy as np
 import librosa
 import evaluate
 from torch.utils.data import Dataset
-from transformers import (
-    Wav2Vec2ForCTC,
-    TrainingArguments,
-    Trainer,
-    EarlyStoppingCallback,
-)
+from transformers import Wav2Vec2ForCTC
 
 from korean_g2p_nomecab import load_g2p
 from jamo_utils import (
@@ -369,6 +364,8 @@ def build_model(processor):
 
 def train(wav_dir, json_dir, output_dir, batch_size, num_epochs, lr, grad_accum, dry_run=False):
     """자모 vocab 기반 CTC 파인튜닝 메인 함수."""
+    # Trainer 관련 import는 여기서 — PEFT 버전 충돌 방지 (모듈 레벨 import 제거)
+    from transformers import TrainingArguments, Trainer, EarlyStoppingCallback
 
     # 1. 자모 Processor 생성
     print(f"\n🔧 자모 Tokenizer/Processor 생성 중...")
