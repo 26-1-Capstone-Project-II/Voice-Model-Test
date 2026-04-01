@@ -18,8 +18,9 @@ finetune_jamo.py — 자모 단위 Vocab 기반 CTC 파인튜닝
   CTC 학습 라벨 [5, 25, 20, 45, 4, 24, 26, ...]
 
 실행:
-    CUDA_VISIBLE_DEVICES=0 python finetune_jamo.py --lr 3e-5
-    CUDA_VISIBLE_DEVICES=0 python finetune_jamo.py --lr 3e-5 --dry_run  # 데이터 검증만
+    # ⚠️ PYTHONNOUSERSITE=1 필수: ~/.local 구버전 transformers 우선순위 방지
+    CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python finetune_jamo.py --lr 3e-5
+    CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python finetune_jamo.py --dry_run
 """
 
 import json
@@ -34,6 +35,10 @@ from typing import Any
 import torch
 import torch.nn as nn
 import numpy as np
+
+# 🚨 서버 GPU cuDNN 초기화 실패 방지
+# finetune_full.py에서도 동일하게 적용됨
+torch.backends.cudnn.enabled = False
 import librosa
 import evaluate
 from torch.utils.data import Dataset
@@ -207,6 +212,26 @@ def split_by_speaker(pairs, seed=42):
 # 2. Dataset 클래스
 # ────────────────────────────────────────────
 
+def wav2vec2_output_length(audio_len: int) -> int:
+    """
+    wav2vec2 CNN encoder의 실제 출력 프레임 수를 정확하게 계산.
+
+    conv_stride = [5, 2, 2, 2, 2, 2, 2] → 총 320x 다운샘플링이지만
+    floor 연산이 7번 누적되므로 audio_len / 320 보다 작을 수 있음.
+
+    예) audio_len=8000 (0.5초):
+        8000 → 1600 → 800 → 400 → 200 → 100 → 50 → 25프레임
+        ← 단순 계산(8000/320=25)과 일치하지만 경계값에서 차이 발생
+
+    CTC 제약: label_len < encoder_output_len  (엄격 부등호)
+    → max_label_len = output_len - 2  (안전 마진 -2)
+    """
+    length = audio_len
+    for stride in [5, 2, 2, 2, 2, 2, 2]:  # wav2vec2 conv_stride
+        length = (length - 1) // stride + 1
+    return length
+
+
 class JamoDataset(Dataset):
     """자모 라벨 기반 CTC 학습 데이터셋."""
 
@@ -228,9 +253,11 @@ class JamoDataset(Dataset):
             ).input_values[0]
 
             # 자모 라벨 → 토큰 ID
-            # CTC 제약: 라벨 길이 < 인코더 출력 길이
-            # wav2vec2: 320x 다운샘플 → 초당 50프레임
-            max_label_len = int((len(audio) / TARGET_SR) * 50)  # 여유롭게 50자/초
+            # CTC 엄격 제약: label_len < encoder_output_len
+            # ⚠️ 단순히 50자/초로 계산하면 floor 누적으로 경계 위반 가능
+            # → 정확한 encoder 출력 길이 공식으로 계산 후 안전 마진 -2 적용
+            encoder_out_len = wav2vec2_output_length(len(audio))
+            max_label_len = max(1, encoder_out_len - 2)
             label_text = rec["label"][:max_label_len]
             label_ids = self.processor.tokenizer(label_text).input_ids
 
@@ -333,6 +360,7 @@ def build_model(processor):
     model = Wav2Vec2ForCTC.from_pretrained(
         BASE_MODEL,
         ctc_loss_reduction="mean",
+        ctc_zero_infinity=True,    # ← CTC inf loss → 0 처리 (NaN 전파 방지)
         pad_token_id=pad_token_id,
         ignore_mismatched_sizes=True,  # lm_head 크기 차이 무시
     )
@@ -413,7 +441,8 @@ def train(wav_dir, json_dir, output_dir, batch_size, num_epochs, lr, grad_accum,
         weight_decay=0.01,
         max_grad_norm=1.0,              # 기울기 폭발 방지
         fp16=False,                     # CTC Loss NaN 방지
-        gradient_checkpointing=True,
+        gradient_checkpointing=False,  # RTX 3080은 VRAM 10GB → 불필요
+                                        # frozen feature_extractor + checkpointing 조합이 NaN 유발
         eval_strategy="steps",
         eval_steps=500,
         save_strategy="steps",
