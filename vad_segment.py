@@ -110,11 +110,20 @@ def get_speech_segments(wav_path: Path, vad_model, get_speech_ts, n_sentences: i
 def split_transcript(transcript: str) -> list[str]:
     """
     Transcript를 문장 단위로 분리.
-    '.' '?' 기준으로 분리하되 빈 문장 제외.
+    - b/ 숨소리·노이즈 마커 제거
+    - '.' '?' '!' 기준 분리
+    - 빈 문장 및 너무 짧은 문장 제외
     """
+    # b/ 마커 제거 (숨소리, 노이즈, 발화 외 구간 표시)
+    transcript = re.sub(r'\s*b/\s*', ' ', transcript)
+    # 기타 노이즈 마커 제거 (n/, l/, u/ 등)
+    transcript = re.sub(r'\s*[a-z]/\s*', ' ', transcript)
+    transcript = transcript.strip()
+
     # 문장 부호 기준 분리
     sentences = re.split(r"[.?!。]\s*", transcript)
-    sentences = [s.strip() for s in sentences if s.strip()]
+    # 빈 문장 및 2음절 미만 제외
+    sentences = [s.strip() for s in sentences if len(s.strip()) >= 2]
     return sentences
 
 

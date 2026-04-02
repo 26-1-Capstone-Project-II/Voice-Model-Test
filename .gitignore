@@ -6,6 +6,9 @@ sampled_dataset/
 
 # 모델 출력
 finetuned_model/
+quantized_model/
+best_model_jamo/
+jamo_tokenizer/
 
 # Python 캐시
 __pycache__/

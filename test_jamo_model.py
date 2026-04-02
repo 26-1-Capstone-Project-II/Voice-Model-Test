@@ -28,6 +28,9 @@ import torch
 import numpy as np
 from pathlib import Path
 
+# 🚨 서버 GPU cuDNN 초기화 실패 방지
+torch.backends.cudnn.enabled = False
+
 # ── 설정 ──────────────────────────────────────
 TARGET_SR = 16000
 

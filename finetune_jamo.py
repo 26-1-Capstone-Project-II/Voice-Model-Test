@@ -36,9 +36,16 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-# 🚨 서버 GPU cuDNN 초기화 실패 방지
-# finetune_full.py에서도 동일하게 적용됨
-torch.backends.cudnn.enabled = False
+# cuDNN 자동 감지: gradient_checkpointing=False 이후로 RTX 3080에서
+# cuDNN 정상 동작 가능. 실패 시에만 비활성화.
+try:
+    import ctypes
+    ctypes.CDLL("libcudnn.so")
+    torch.backends.cudnn.enabled = True
+    print("🖥️  cuDNN 활성화 (속도 향상)")
+except Exception:
+    torch.backends.cudnn.enabled = False
+    print("⚠️   cuDNN 비활성화 (호환성 모드)")
 import librosa
 import evaluate
 from torch.utils.data import Dataset
@@ -62,10 +69,13 @@ MAX_SEC    = 10.0
 
 HOME = Path.home()
 
-# 데이터 경로 (서버 기준)
+# 데이터 경로 (서버 기준) — VAD 세그먼트 데이터 우선
+SEGMENT_DIR   = HOME / "mingly_workspace" / "Voice-Model-Test" / "segmented_dataset"
+DEFAULT_JSON_DIR = SEGMENT_DIR                  # train.jsonl 위치
+DEFAULT_WAV_DIR  = SEGMENT_DIR / "wavs"         # WAV 세그먼트 위치
+
+# 원본 데이터 경로 (폴백용)
 DATA_ROOT = HOME / "mingly_workspace" / "dataset" / "013.구음장애_음성인식_데이터" / "01.데이터" / "1.Training"
-DEFAULT_WAV_DIR  = DATA_ROOT / "원천데이터"
-DEFAULT_JSON_DIR = DATA_ROOT / "라벨링데이터_250331_add"
 
 # 출력 경로
 DEFAULT_OUTPUT_DIR = HOME / "mingly_workspace" / "Voice-Model-Test" / "best_model_jamo"
@@ -495,7 +505,7 @@ if __name__ == "__main__":
     parser.add_argument("--wav_dir",    default=str(DEFAULT_WAV_DIR))
     parser.add_argument("--json_dir",   default=str(DEFAULT_JSON_DIR))
     parser.add_argument("--output_dir", default=str(DEFAULT_OUTPUT_DIR))
-    parser.add_argument("--batch_size", type=int,   default=1)
+    parser.add_argument("--batch_size", type=int,   default=2)   # RTX 3080 10GB → 배치 2 실험
     parser.add_argument("--num_epochs", type=int,   default=30)
     parser.add_argument("--grad_accum", type=int,   default=16)
     parser.add_argument("--lr",         type=float, default=3e-5)
