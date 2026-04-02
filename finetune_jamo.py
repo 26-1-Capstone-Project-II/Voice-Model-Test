@@ -36,16 +36,10 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-# cuDNN 자동 감지: gradient_checkpointing=False 이후로 RTX 3080에서
-# cuDNN 정상 동작 가능. 실패 시에만 비활성화.
-try:
-    import ctypes
-    ctypes.CDLL("libcudnn.so")
-    torch.backends.cudnn.enabled = True
-    print("🖥️  cuDNN 활성화 (속도 향상)")
-except Exception:
-    torch.backends.cudnn.enabled = False
-    print("⚠️   cuDNN 비활성화 (호환성 모드)")
+# 이 서버 환경(CUDA/cuDNN 버전 불일치)에서 cuDNN이 일관되게 실패.
+# libcudnn.so는 존재하지만 PyTorch CUDA 컨텍스트에서 초기화 불가.
+# GPU 연산은 cuDNN 없이도 동작하며 속도 차이는 수용 가능.
+torch.backends.cudnn.enabled = False
 import librosa
 import evaluate
 from torch.utils.data import Dataset
