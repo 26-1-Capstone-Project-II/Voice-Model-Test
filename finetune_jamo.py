@@ -65,7 +65,8 @@ from jamo_utils import (
 
 BASE_MODEL = "w11wo/wav2vec2-xls-r-300m-korean"
 TARGET_SR  = 16000
-MAX_SEC    = 10.0
+MAX_SEC    = 25.0   # 구음장애 환자 발화 속도: 평균 문장 20~25초 (정상인 3~5초)
+MIN_SEC    = 0.5    # 0.5초 미만 세그멘트 제외 (노이즈)
 
 HOME = Path.home()
 
@@ -117,6 +118,7 @@ def load_pairs(wav_dir: Path, json_dir: Path, g2p) -> list:
     if train_jsonl.exists():
         print(f"  📂 JSONL 데이터 감지 → 직접 로드")
         all_data = []
+        skipped_short, skipped_long = 0, 0
         for split_name in ["train", "validation", "test"]:
             path = json_dir / f"{split_name}.jsonl"
             if not path.exists():
@@ -126,6 +128,16 @@ def load_pairs(wav_dir: Path, json_dir: Path, g2p) -> list:
                     try:
                         obj = json.loads(line.strip())
                         text = obj.get("label", "").strip()
+                        duration = obj.get("duration", 0)
+
+                        # duration 필터링: 너무 짧거나 너무 긴 세그멘트 제외
+                        if duration < MIN_SEC:
+                            skipped_short += 1
+                            continue
+                        if duration > MAX_SEC:
+                            skipped_long += 1
+                            continue
+
                         if text and obj.get("wav_path"):
                             # G2P → 자모 변환
                             phonetic = g2p(text, descriptive=True).strip()
@@ -137,6 +149,11 @@ def load_pairs(wav_dir: Path, json_dir: Path, g2p) -> list:
                                 all_data.append(obj)
                     except Exception:
                         continue
+        print(f"  ✅ 로드: {len(all_data):,}개")
+        if skipped_short:
+            print(f"  🧹 제외 (너무 짧음, <{MIN_SEC}s): {skipped_short:,}개")
+        if skipped_long:
+            print(f"  🧹 제외 (너무 김, >{MAX_SEC}s): {skipped_long:,}개")
         return all_data
 
     # 개별 JSON 파일 매칭
