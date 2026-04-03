@@ -465,16 +465,16 @@ def train(wav_dir, json_dir, output_dir, batch_size, num_epochs, lr, grad_accum,
         gradient_checkpointing=False,  # RTX 3080은 VRAM 10GB → 불필요
                                         # frozen feature_extractor + checkpointing 조합이 NaN 유발
         eval_strategy="steps",
-        eval_steps=500,
+        eval_steps=2000,                # 2000스텝마다 평가 (patience×eval_steps = 10k스텝 여유)
         save_strategy="steps",
-        save_steps=500,
-        logging_steps=10,
+        save_steps=2000,
+        logging_steps=50,
         load_best_model_at_end=True,
-        metric_for_best_model="cer",
+        metric_for_best_model="eval_loss",  # CER은 epoch 1 이전에 안 변함 → loss로 판단
         greater_is_better=False,
-        save_total_limit=3,
+        save_total_limit=2,
         report_to="none",
-        dataloader_num_workers=0,
+        dataloader_num_workers=2,       # 데이터 로딩 병렬화
         eval_accumulation_steps=10,
     )
 
@@ -488,6 +488,8 @@ def train(wav_dir, json_dir, output_dir, batch_size, num_epochs, lr, grad_accum,
         data_collator=DataCollatorCTC(processor),
         compute_metrics=make_compute_metrics(processor),
         callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
+        # patience=5 × eval_steps=2000 = 10,000 스텝 개선 없으면 종료
+        # CER 판단은 epoch 3 이후부터 의미있으므로 loss 기반 early stopping이 적합
     )
 
     # 7. 학습 시작
