@@ -30,7 +30,7 @@ def main():
     print("📥 [1/3] HuggingFace에서 Zeroth-Korean 데이터셋 다운로드 중...")
     print("   (최초 실행 시 51시간 분량 오디오가 다운로드됩니다. 잠시만 기다려주세요!)")
     
-    ds = load_dataset("zeroth_korean")
+    ds = load_dataset("Bingsu/zeroth-korean")
     
     # 분할 (train 2.2만개, test 4천개)
     train_data = list(ds["train"])
