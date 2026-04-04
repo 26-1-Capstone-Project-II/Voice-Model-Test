@@ -56,7 +56,7 @@
 
 ### 🔄 3단계 진행 중 — Whisper Tiny 발음 전사 ⭐
 
-**핵심 전환점:**
+**핵심 전환점 1: 모델 아키텍처**
 ```
 wav2vec2 CTC:   label과 audio가 정확히 정렬 필요 → VAD 실패 시 학습 불가
 Whisper Seq2Seq: attention으로 자체 정렬 → 유연한 학습 가능
@@ -64,6 +64,10 @@ Whisper Seq2Seq: attention으로 자체 정렬 → 유연한 학습 가능
 wav2vec2-300m:  1.2GB → iOS ❌
 Whisper tiny:   150MB → iOS/CoreML ✅ (양자화 시 ~40MB)
 ```
+
+**핵심 전환점 2: 학습 데이터 대전환 (구음장애 → 낭독체)**
+VAD 정렬 문제를 해결하려다 발견한 프로젝트의 **가장 중요한 인사이트**.
+발음 평가를 위해 "구음장애 데이터"가 아닌 **"정상 낭독체(Zeroth-Korean) 데이터"**를 사용해야 합니다.
 
 ---
 
@@ -105,19 +109,18 @@ Whisper tiny:   150MB → iOS/CoreML ✅ (양자화 시 ~40MB)
 └─────────────────────────────────────────────┘
 ```
 
-### 학습 전략: 깨끗한 발화로 학습 → 부정확한 발화 감지
+### 학습 전략: 왜 구음장애가 아닌 '정상 낭독체'를 쓰는가? (💡 핵심 인사이트)
 
-```
-학습: 깨끗한 발화 + G2P 라벨
-  오디오: [정확한 "가치 머글까" 발음]
-  라벨:   "가치 머글까"
-  → 모델 학습: 이 소리 = 이 텍스트
+**[오류 시나리오] 구음장애 음성으로 학습할 경우:**
+- 오디오: "가티 머거요" (환자의 틀린 발음)
+- 라벨(G2P): "가치 머거요" (원래 의도한 정답 발음)
+- **문제점:** 모델이 "가티"라는 틀린 소리를 들어도 "가치"로 **자동 교정(Auto-correct)**하는 법을 배우게 됩니다. 앱에서 환자가 틀리게 발음해도 모델이 스스로 빈칸을 채워 정답으로 출력해버려, 발음 오류 추적이 불가능해집니다.
 
-추론: 부정확한 발화 → 들은 대로 출력
-  오디오: [부정확한 "가티 머글까" 발음]
-  출력:   "가티 머글까" ← 학습에서 없던 패턴 → 들은 대로
-  비교:   기대 "가치" vs 실제 "가티" → ㅊ→ㅌ
-```
+**[성공 시나리오] 정상 낭독체(Zeroth-Korean)로 학습할 경우:**
+- 오디오: "가치 머거요" (정상인의 정확한 발음)
+- 라벨(G2P): "가치 머거요" 
+- **해결책:** 모델은 100% "정확한 소리 = 정확한 발음 기호"의 1:1 매핑만을 학습합니다.
+- **결과:** 추론 시 환자가 "가티 머거요"라고 틀리게 말하면, 모델은 교정하는 법을 배운 적이 없기 때문에 자기가 들은 가장 비슷한 소리인 **"가티 머거요"를 날것 그대로(Raw) 출력**합니다! → **발음 오류 감지 대성공!**
 
 ---
 
@@ -130,18 +133,25 @@ pip install transformers datasets accelerate evaluate jiwer librosa soundfile
 pip install openai-whisper gtts sounddevice
 ```
 
+### 데이터 다운로드 및 전처리 (Zeroth-Korean)
+```bash
+# HuggingFace 데이터 다운로드 및 변환 (51시간 분량 오디오 → WAV/JSONL)
+CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python prepare_zeroth.py
+```
+
 ### Whisper 파인튜닝 (서버)
 ```bash
-# 1. 데이터 검증 (dry run)
-CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python finetune_whisper.py --dry_run
-
-# 2. 빠른 실험 (10k 샘플, ~2시간)
+# 1. 빠른 실험 (10k 샘플, ~2시간)
 CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python finetune_whisper.py \
+    --json_dir zeroth_dataset \
+    --apply_g2p \
     --max_samples 10000 --lr 2e-5 --num_epochs 3
 
-# 3. 전체 학습 (~20시간)
+# 2. 전체 학습 (~22,000개, ~10시간)
 CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python finetune_whisper.py \
-    --lr 2e-5 --num_epochs 5 --batch_size 8 --grad_accum 2
+    --json_dir zeroth_dataset \
+    --apply_g2p \
+    --lr 2e-5 --num_epochs 3 --batch_size 8 --grad_accum 2
 ```
 
 ### 테스트
@@ -205,3 +215,4 @@ openai-whisper
 - VAD: [Silero-VAD](https://github.com/snakers4/silero-vad)
 - iOS 배포: [WhisperKit](https://github.com/argmaxinc/WhisperKit)
 - AI Hub 구음장애 데이터: [aihub.or.kr](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=608)
+- HuggingFace Zeroth-Korean 데이터: [Bingsu/zeroth-korean](https://huggingface.co/datasets/Bingsu/zeroth-korean)
