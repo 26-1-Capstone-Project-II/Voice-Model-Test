@@ -78,9 +78,9 @@ def main():
                 wav_name = f"{split_name}_{i:06d}.wav"
                 wav_path = wav_dir / wav_name
                 
-                sf.write(str(wav_path), audio["array"], audio["sampling_rate"])
+                sf.write(str(wav_path), audio_array, sr)
                 
-                duration = len(audio["array"]) / audio["sampling_rate"]
+                duration = len(audio_array) / sr
                 
                 # JSONL 기록
                 # (label은 finetune_whisper.py에서 --apply_g2p 적용 시 자동 발음기호로 덮어씌워집니다)
