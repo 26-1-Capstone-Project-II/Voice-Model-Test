@@ -154,17 +154,45 @@ CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python finetune_whisper.py \
     --lr 2e-5 --num_epochs 3 --batch_size 8 --grad_accum 2
 ```
 
-### 테스트
+### 테스트 및 검증
 ```bash
-# 발음 전사 + 베이스라인 비교
+# 발음 전사 성능 및 베이스라인(원본 모델) 대비 교정 문제 극복 검증
 CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_whisper_phonetic.py \
     --model_path best_model_whisper/best
 
-# 발음 평가 단독 실행
+# 파일 단독 평가 및 자모 레벨 피드백 확인
 CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python pronunciation_evaluator.py \
     --model_path best_model_whisper/best \
     --audio recording.wav \
     --target "같이 먹을까?"
+```
+
+---
+
+## 🔥 발음 평가 엔진 동작 사례 (Demo)
+
+스크립트(`test_whisper_phonetic.py`) 실행 시 나타나는 **실제 파인튜닝 모델의 오류 감지 결과**입니다. 
+단순한 텍스트 비교가 아닌, 모델 입력을 통해 **사람의 귀처럼** 발음 오류를 정확하게 잡아냅니다.
+
+```text
+[성공 케이스 1: 연음의 완벽한 전사]
+목표: 좋네요
+기대 발음: 존네요
+실제 디코딩: 존네요 (정서법 '좋네요'가 아닌 통과음 완벽 전사)
+결과: 점수 100%
+
+[성공 케이스 2: 족집게 오류 감지]
+목표: 닭볶음
+기대 발음: 닥뽀끔
+모델이 들은 소리: 박뿌금
+오류 피드백 추출: ㄷ→ㅂ, ㅗ→ㅜ, ㄲ→ㄱ
+(사용자가 어떤 모음과 자음을 다르게 발음했는지 정확히 도출!)
+
+[성공 케이스 3: 묵음/비음화 오류 감지]
+목표: 학교에 갑니다
+기대 발음: 학꾜에 감니다
+모델이 들은 소리: 학꾜에 갑니다 (비음화 '감니다'가 안 된 소리)
+오류 피드백 추출: ㅁ→ㅂ
 ```
 
 ---
@@ -186,7 +214,13 @@ CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python pronunciation_evaluator.py \
 
 | 구분 | CER | Loss | 비고 |
 |------|-----|------|------|
-| **Zeroth-Korean (낭독체 51h) + g2pk 파인튜닝** | **0.088 (8.8%)** | 0.20 | **대성공! 완벽한 소리나는 대로(발음열) 전사 달성** |
+| **Zeroth-Korean (낭독체 51h) + g2pk 파인튜닝** | **0.088 (8.8%)** | 0.20 | **대성공! 발음열 전사 및 상세 자모 피드백 완벽 지원** |
+
+---
+
+## 🍏 넥스트 스텝 (Phase 4)
+- **iOS 온디바이스 심기:** 최종 파인튜닝된 HuggingFace Whisper 모델을 Apple `CoreML`로 변환(Export).
+- **WhisperKit 통합:** Swift iOS 앱 단말기에서 실시간 마이크 입력과 연동되는 발음 교정 프론트엔드 연결.
 
 ---
 
