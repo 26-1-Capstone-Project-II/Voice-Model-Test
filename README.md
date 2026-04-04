@@ -1,7 +1,7 @@
 # 🔊 온보이스 (On-Voice) — 발음 교정 모듈
 
-> 청각장애인을 위한 발음 교정 앱 **온보이스**의 AI 발음 분석 백엔드  
-> CTC + Greedy Decoding + G2P 기반 발음 채점 시스템
+> 청각장애인을 위한 발음 교정 앱 **온보이스**의 AI 발음 분석 백엔드
+> Whisper Tiny + G2P 기반 발음 전사 & 자모 레벨 오류 감지 시스템
 
 ---
 
@@ -9,24 +9,25 @@
 
 ```
 .
-├── pronunciation_scorer.py       # 핵심 발음 분석기 (1단계 베이스라인)
-├── test_final.py                 # 파일 + 마이크 통합 테스트
-├── test_g2p.py                   # G2P 발음 전사 재점수 검증
-├── pronunciation_tester.html     # 브라우저 UI 데모 대시보드
-├── requirements.txt              # 의존성 목록
+├── [Whisper 발음 전사 파이프라인] ★ 현재 진행 중
+│   ├── finetune_whisper.py          # ★ Whisper tiny 발음 전사 파인튜닝
+│   ├── pronunciation_evaluator.py   # 발음 평가 엔진 (자모 레벨 비교)
+│   └── test_whisper_phonetic.py     # 발음 전사 테스트 + 베이스라인 비교
 │
-├── korean_g2p_nomecab.py         # MeCab 없이 동작하는 G2P (Windows 호환)
+├── [공용 모듈]
+│   ├── korean_g2p_nomecab.py        # MeCab 없이 동작하는 G2P (Windows 호환)
+│   ├── jamo_utils.py                # 자모 Vocab 생성 + 음절↔자모 변환 유틸리티
+│   └── vad_segment.py               # Silero-VAD 기반 오디오 세그멘테이션
 │
-├── [자모 Vocab 파인튜닝] ★ 현재 진행 중
-│   ├── jamo_utils.py             # 자모 Vocab 생성 + 음절↔자모 변환 유틸리티
-│   ├── finetune_jamo.py          # ★ 자모 기반 CTC 파인튜닝 (핵심)
-│   └── test_jamo_model.py        # 파인튜닝 모델 검증 + 베이스라인 비교
+├── [이전 시도 (자모 CTC)] — 학습 기록용
+│   ├── finetune_jamo.py             # 자모 vocab CTC 파인튜닝 (wav2vec2)
+│   └── test_jamo_model.py           # 자모 CTC 모델 검증
 │
-├── [이전 파인튜닝 시도]
-│   ├── finetune_full.py          # 음절 vocab 파인튜닝 (v1, loss 3.31 → 실패)
-│   ├── finetune_lora.py          # LoRA 파인튜닝 시도
-│   ├── finetune_simple.py        # 간단 파인튜닝 시도
-│   └── vad_segment.py            # VAD 기반 오디오 세그멘테이션
+├── [1단계 베이스라인]
+│   ├── pronunciation_scorer.py      # CTC + Greedy Decoding 베이스라인
+│   ├── test_final.py                # 파일/마이크 통합 테스트
+│   ├── test_g2p.py                  # G2P 발음 전사 검증
+│   └── pronunciation_tester.html    # 브라우저 UI 데모
 │
 └── README.md
 ```
@@ -40,166 +41,140 @@
 - `w11wo/wav2vec2-xls-r-300m-korean` 베이스라인 채택
 - G2P (g2pk, descriptive=True) 발음 전사 채점 기준 통합
 - 음절 단위 Diff 시각화 + CER 기반 점수
-- 마이크 / 파일 입력, TTS 재생, 연습 모드 구현
 
-### 🔄 2단계 진행 중 — 자모 Vocab 기반 파인튜닝
+### ⚠️ 2단계 완료 — 자모 Vocab + wav2vec2 CTC (중단)
 
-#### 이전 시도 (음절 vocab)
-- AIHub 구음장애 음성인식 데이터셋 (언어청각장애) 다운로드 및 탐색
-- Silero-VAD 기반 세그멘테이션: 1,280개 세션 → 155,453개 세그멘트
-- `finetune_full.py`로 30 에폭 학습 → **Train Loss 3.31 (실패)**
-  - 원인: 음절 vocab (1,207개) ↔ G2P 발음 전사 라벨 불일치 (OOV 문제)
+| 시도 | 데이터 | 결과 | 원인 |
+|------|--------|------|------|
+| 음절 vocab | 155k 세그멘트 | loss 3.31 | Vocab OOV 문제 |
+| 자모 vocab (1k) | 1,024 매칭 | loss 0.80 | 과적합 |
+| 자모 vocab (155k) | 117k 필터링 | CER 0.92 | VAD 균등분할 → 라벨 불일치 |
 
-#### 현재 진행: 자모 Vocab 재구축 ⭐
-- **핵심 변경: 음절 vocab → 자모 vocab (57개)**
-  - OOV 완전 해소 — 어떤 발음이든 자모로 분해 가능
-  - 발음 오류 자모 레벨 정밀 감지
-  - CTC head 부담 감소 (1,207 → 57 클래스)
-- `jamo_utils.py`: 자모 분해/재조립 + Processor 생성
-- `finetune_jamo.py`: CTC head 교체 + 자모 라벨 학습
-- `test_jamo_model.py`: 모델 검증 및 베이스라인 비교
+**중단 사유:**
+- CTC는 오디오-라벨 strict alignment 필요 → VAD 균등분할 데이터에서 학습 불가
+- wav2vec2-300m (1.2GB) → iOS 온디바이스 배포 불가
 
-#### 검토 중: HuBERT 기반 전환 (차기 전략)
-- `team-lucid/hubert-base-korean`: 음향 충실 출력, 크기 1/3
+### 🔄 3단계 진행 중 — Whisper Tiny 발음 전사 ⭐
+
+**핵심 전환점:**
+```
+wav2vec2 CTC:   label과 audio가 정확히 정렬 필요 → VAD 실패 시 학습 불가
+Whisper Seq2Seq: attention으로 자체 정렬 → 유연한 학습 가능
+
+wav2vec2-300m:  1.2GB → iOS ❌
+Whisper tiny:   150MB → iOS/CoreML ✅ (양자화 시 ~40MB)
+```
 
 ---
 
-## 🧬 자모 Vocab 핵심 설계
+## 🎯 핵심 설계: 소리나는 대로 텍스트 출력
 
-### 왜 자모 vocab인가?
-
-```
-기존 (음절 vocab):
-  vocab = ["가", "각", "간", ... ]  ← 1,207개
-  "가치" → tokenizer → [1, 1100]
-  ⚠️ G2P 출력 중 vocab에 없는 음절 → [UNK] → 학습 불가
-
-변경 (자모 vocab):
-  vocab = ["ㄱ", "ㅏ", "ㅊ", "ㅣ", ...]  ← 57개
-  "가치" → 자모분해 → "ㄱㅏㅊㅣ" → tokenizer → [5, 25, 20, 45]
-  ✅ 어떤 발음이든 100% 인코딩 가능
-```
-
-### 파이프라인 흐름
+### 왜 기존 ASR을 쓸 수 없는가
 
 ```
-입력 문장:     "같이 해볼까"
-    ↓ G2P (descriptive=True)
-발음 전사:     "가치 해볼까"
-    ↓ syllable_to_jamo()
-자모 라벨:     "ㄱㅏㅊㅣ|ㅎㅐㅂㅗㄹㄲㅏ"    (| = 공백)
-    ↓ Wav2Vec2CTCTokenizer
-토큰 ID:       [5, 25, 20, 45, 4, 24, 26, ...]
-    ↓ CTC 학습
-모델 출력:     자모 시퀀스
-    ↓ jamo_to_syllable()
-최종 텍스트:   "가치 해볼까"    (사용자 피드백용)
+기존 ASR 모델 (Whisper, CLOVA 등):
+  사용자 발화: "가치 머글까?" (소리)
+  기존 모델 출력: "같이 먹을까?" ← 맞춤법 보정
+  → 발음 오류를 숨김 → 교정 앱에서 사용 불가
+
+우리 모델 (Whisper + G2P 파인튜닝):
+  사용자 발화: "가티 머글까?" (소리)
+  우리 모델 출력: "가티 머글까?" ← 소리나는 대로
+  → 기대 발음 "가치 머글까?"와 비교 → ㅊ→ㅌ 오류 감지!
 ```
 
-### 자모 Vocab 구성 (총 57개)
+### 앱 전체 흐름
 
-| 구분 | 토큰 수 | 내용 |
-|------|---------|------|
-| 특수토큰 | 5 | `<pad>`, `<s>`, `</s>`, `<unk>`, `\|` |
-| 초성 자음 | 19 | ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ |
-| 중성 모음 | 21 | ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ |
-| 겹받침 | 11 | ㄳㄵㄶㄺㄻㄼㄽㄾㄿㅀㅄ |
+```
+┌─────────────────────────────────────────────┐
+│  1. 사용자 목표 문장 입력                      │
+│     "같이 먹을까?"                            │
+│          ↓ G2P (descriptive=True)            │
+│     "가치 머글까?" (기대 발음)                  │
+│                                              │
+│  2. 사용자 발화 녹음 → Whisper tiny            │
+│     "가티 머글까?" (실제 발음)                  │
+│                                              │
+│  3. 자모 레벨 비교                             │
+│     기대: ㄱㅏㅊㅣ ㅁㅓㄱㅡㄹㄲㅏ               │
+│     실제: ㄱㅏㅌㅣ ㅁㅓㄱㅡㄹㄲㅏ               │
+│               ↑                              │
+│          ㅊ→ㅌ 오류 감지!                      │
+│                                              │
+│  4. 피드백: 발음 점수 85%, 오류 위치 표시       │
+└─────────────────────────────────────────────┘
+```
+
+### 학습 전략: 깨끗한 발화로 학습 → 부정확한 발화 감지
+
+```
+학습: 깨끗한 발화 + G2P 라벨
+  오디오: [정확한 "가치 머글까" 발음]
+  라벨:   "가치 머글까"
+  → 모델 학습: 이 소리 = 이 텍스트
+
+추론: 부정확한 발화 → 들은 대로 출력
+  오디오: [부정확한 "가티 머글까" 발음]
+  출력:   "가티 머글까" ← 학습에서 없던 패턴 → 들은 대로
+  비교:   기대 "가치" vs 실제 "가티" → ㅊ→ㅌ
+```
 
 ---
 
-## 🚀 자모 파인튜닝 실행 방법
+## 🚀 실행 방법
 
 ### 환경 설치
 ```bash
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 pip install transformers datasets accelerate evaluate jiwer librosa soundfile
+pip install openai-whisper gtts sounddevice
 ```
 
-### 파인튜닝 실행 (서버)
+### Whisper 파인튜닝 (서버)
 ```bash
 # 1. 데이터 검증 (dry run)
-CUDA_VISIBLE_DEVICES=0 python finetune_jamo.py --dry_run
+CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python finetune_whisper.py --dry_run
 
-# 2. 본 학습 (자모 vocab, lr=3e-5)
-CUDA_VISIBLE_DEVICES=0 python finetune_jamo.py --lr 3e-5
+# 2. 빠른 실험 (10k 샘플, ~2시간)
+CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python finetune_whisper.py \
+    --max_samples 10000 --lr 2e-5 --num_epochs 3
 
-# 3. 커스텀 설정
-CUDA_VISIBLE_DEVICES=0 python finetune_jamo.py \
-  --lr 3e-5 \
-  --num_epochs 20 \
-  --batch_size 2 \
-  --grad_accum 8
+# 3. 전체 학습 (~20시간)
+CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python finetune_whisper.py \
+    --lr 2e-5 --num_epochs 5 --batch_size 8 --grad_accum 2
 ```
 
-### 모델 검증
+### 테스트
 ```bash
-# 파인튜닝 모델 단독 테스트 (gTTS 기반)
-python test_jamo_model.py --model ./best_model_jamo/best
+# 발음 전사 + 베이스라인 비교
+CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_whisper_phonetic.py \
+    --model_path best_model_whisper/best
 
-# 베이스라인과 비교
-python test_jamo_model.py --model ./best_model_jamo/best --compare
-
-# 실제 오디오 파일 테스트
-python test_jamo_model.py --model ./best_model_jamo/best --audio my_voice.wav --text "같이 해볼까"
+# 발음 평가 단독 실행
+CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python pronunciation_evaluator.py \
+    --model_path best_model_whisper/best \
+    --audio recording.wav \
+    --target "같이 먹을까?"
 ```
-
-### 발음 분석 (1단계 베이스라인)
-```bash
-# 연습 모드: 문장 듣고 → 따라 말하기 → 분석
-python pronunciation_scorer.py --practice
-
-# 마이크 녹음 후 분석
-python pronunciation_scorer.py --text "같이 해볼까" --mic
-
-# 자동 테스트 (gTTS)
-python pronunciation_scorer.py --test
-```
-
----
-
-## 🧠 기술 구조
-
-### 전체 파이프라인
-```
-구음장애 WAV (세션 녹음)
-        ↓ Silero-VAD + 균등 분할
-문장 단위 세그멘트 (1~15초)
-        ↓ Transcript → G2P → 자모 분해
-오디오 ↔ 자모 라벨 쌍
-        ↓ wav2vec2 CTC 파인튜닝 (자모 vocab 57개)
-구음장애 특화 ASR 모델
-        ↓
-입력 음성 → 자모 인식 → 음절 재조립 → G2P 정답 비교 → CER 점수 + 오류 위치
-```
-
-### 핵심 설계 결정
-
-**CTC + Greedy Decoding (LM 없음)**
-LM이 개입하면 발음 오류를 맞춤법으로 교정해버리기 때문에
-음향 신호에만 의존하는 Greedy Decoding 사용.
-
-**자모 단위 Vocab (v2)**
-음절 vocab은 G2P 발음 전사와 OOV 불일치 → 학습 실패.
-자모 vocab (57개)으로 전환하여 완전한 발음 커버리지 확보.
-
-**G2P 채점 기준 (descriptive=True)**
-```python
-g2p("같이 해볼까", descriptive=True)  # → "가치 해볼까"
-g2p("좋네요", descriptive=True)       # → "존네요"
-```
-학습 라벨과 채점 기준을 동일하게 맞춰 일관성 확보.
 
 ---
 
 ## 📊 성능 기록
 
+### wav2vec2 CTC 시도 (중단)
+
 | 구분 | CER | Loss | 비고 |
 |------|-----|------|------|
 | 베이스라인 (파인튜닝 전) | ~0.99 | - | 구음장애 음성 미인식 |
-| 1차 시도 (음절 vocab, 세션 단위) | 0.70 | - | 오디오-텍스트 불일치 |
-| 2차 시도 (음절 vocab, VAD 세그멘트) | - | 3.31 | vocab OOV 문제 → 수렴 실패 |
-| 3차 시도 (자모 vocab, 1k 데이터) | 추정 ~0.7 | 0.80 | ⚠️ 과적합 (1,024개로 부족) |
-| **4차 시도 (자모 vocab, 155k 세그먼트)** | - | - | **진행 예정** ⭐ |
+| 2차 (음절 vocab, VAD 세그멘트) | - | 3.31 | vocab OOV → 수렴 실패 |
+| 3차 (자모 vocab, 1k 데이터) | ~0.7 | 0.80 | 과적합 (1,024개 부족) |
+| 4차 (자모 vocab, 155k 세그먼트) | 0.92 | 2.78 | VAD 라벨 불일치 → 정체 |
+
+### Whisper Tiny 시도 (진행 중)
+
+| 구분 | CER | Loss | 비고 |
+|------|-----|------|------|
+| **Whisper tiny 파인튜닝** | - | - | **진행 예정** ⭐ |
 
 ---
 
@@ -207,7 +182,7 @@ g2p("좋네요", descriptive=True)       # → "존네요"
 
 ```
 torch>=2.0.0
-transformers>=5.0.0
+transformers>=4.30.0
 librosa>=0.10.0
 jiwer>=3.0.0
 sounddevice>=0.4.6
@@ -217,15 +192,16 @@ silero-vad
 soundfile
 g2pk>=0.9.4
 gtts>=2.3.0
-pyttsx3>=2.90
+openai-whisper
 ```
 
 ---
 
 ## 🔗 참고
 
-- 모델: [w11wo/wav2vec2-xls-r-300m-korean](https://huggingface.co/w11wo/wav2vec2-xls-r-300m-korean)
+- 모델: [openai/whisper-tiny](https://huggingface.co/openai/whisper-tiny)
+- 이전 모델: [w11wo/wav2vec2-xls-r-300m-korean](https://huggingface.co/w11wo/wav2vec2-xls-r-300m-korean)
 - G2P: [g2pk](https://github.com/Kyubyong/g2pK)
 - VAD: [Silero-VAD](https://github.com/snakers4/silero-vad)
+- iOS 배포: [WhisperKit](https://github.com/argmaxinc/WhisperKit)
 - AI Hub 구음장애 데이터: [aihub.or.kr](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=608)
-- HuBERT (차기): [team-lucid/hubert-base-korean](https://huggingface.co/team-lucid/hubert-base-korean)
