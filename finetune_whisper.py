@@ -355,6 +355,9 @@ def train(
     model.generation_config.forced_decoder_ids = processor.get_decoder_prompt_ids(
         language="ko", task="transcribe"
     )
+    # 반복 생성 방지 ("시퍼서 시퍼서 시퍼서..." 문제 해결)
+    model.generation_config.no_repeat_ngram_size = 3
+    model.generation_config.repetition_penalty = 1.2
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -373,7 +376,7 @@ def train(
         gradient_accumulation_steps=grad_accum,
         num_train_epochs=num_epochs,
         learning_rate=lr,
-        warmup_ratio=0.1,
+        warmup_ratio=0.05,
         weight_decay=0.01,
         max_grad_norm=1.0,
         fp16=True,                          # Whisper는 fp16 안전
@@ -385,7 +388,7 @@ def train(
         save_steps=eval_steps,
         logging_steps=50,
         load_best_model_at_end=True,
-        metric_for_best_model="cer",
+        metric_for_best_model="eval_loss",  # CER은 반복 생성 시 > 1.0 왜곡 → loss 기반
         greater_is_better=False,
         save_total_limit=2,
         report_to="none",
