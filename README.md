@@ -182,9 +182,11 @@ CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python pronunciation_evaluator.py \
 
 ### Whisper Tiny 시도 (진행 중)
 
+### Whisper Tiny 시도 (현재 적용 모델 ⭐)
+
 | 구분 | CER | Loss | 비고 |
 |------|-----|------|------|
-| **Whisper tiny 파인튜닝** | - | - | **진행 예정** ⭐ |
+| **Zeroth-Korean (낭독체 51h) + g2pk 파인튜닝** | **0.088 (8.8%)** | 0.20 | **대성공! 완벽한 소리나는 대로(발음열) 전사 달성** |
 
 ---
 
