@@ -1,15 +1,17 @@
-@"
 # 데이터셋 (용량 너무 큼)
 segmented_dataset/
 sampled_dataset/
+zeroth_dataset/
 구음장애 음성인식 데이터/
 
-# 모델 출력
+# 이전/기타 모델 출력
 finetuned_model/
 quantized_model/
 best_model_jamo/
-best_model_whisper/
 jamo_tokenizer/
+
+# Whisper 모델 제외 규정 (테스트를 위해 LFS로 추적하도록 Gitignore에서 삭제함)
+# best_model_whisper/  <--- 제외 해제!
 
 # Python 캐시
 __pycache__/
@@ -25,6 +27,3 @@ segmented_test*/
 # 환경
 .env
 venv/
-"@ | Out-File -FilePath .gitignore -Encoding utf8*.safetensors
-*.bin
-best_model/model.safetensors
