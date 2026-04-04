@@ -15,7 +15,7 @@ from pathlib import Path
 
 def main():
     try:
-        from datasets import load_dataset
+        from datasets import load_dataset, Audio
         from tqdm import tqdm
     except ImportError:
         print("❌ 라이브러리가 없습니다. 먼저 설치해주세요:")
@@ -27,10 +27,11 @@ def main():
     wav_dir = out_dir / "wavs"
     wav_dir.mkdir(parents=True, exist_ok=True)
     
-    print("📥 [1/3] HuggingFace에서 Zeroth-Korean 데이터셋 다운로드 중...")
-    print("   (최초 실행 시 51시간 분량 오디오가 다운로드됩니다. 잠시만 기다려주세요!)")
-    
+    print("📥 [1/3] HuggingFace에서 Zeroth-Korean 데이터셋 로드 중...")
     ds = load_dataset("Bingsu/zeroth-korean")
+    
+    # torchcodec 오류를 우회하기 위해 Audio 내장 디코딩 비활성화
+    ds = ds.cast_column("audio", Audio(decode=False))
     
     # 분할 (train 2.2만개, test 4천개)
     train_data = list(ds["train"])
@@ -58,13 +59,20 @@ def main():
     
     print("\n⚙️ [3/3] 오디오 파일(WAV) 추출 및 JSONL 생성 시작...")
     
+    import io
     for split_name, records in splits.items():
         jsonl_path = out_dir / f"{split_name}.jsonl"
         
         with open(jsonl_path, "w", encoding="utf-8") as f:
             for i, rec in enumerate(tqdm(records, desc=f"{split_name[:5]:5s}")):
                 text = rec["text"]
-                audio = rec["audio"]
+                audio_info = rec["audio"]
+                
+                # 수동 디코딩 (torchcodec 우회)
+                if "bytes" in audio_info and audio_info["bytes"] is not None:
+                    audio_array, sr = sf.read(io.BytesIO(audio_info["bytes"]))
+                else:
+                    audio_array, sr = sf.read(audio_info["path"])
                 
                 # 개별 WAV 파일로 추출하여 저장 (finetune_whisper.py와 완벽 호환)
                 wav_name = f"{split_name}_{i:06d}.wav"
