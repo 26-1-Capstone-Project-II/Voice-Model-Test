@@ -19,15 +19,11 @@
 │   ├── jamo_utils.py                # 자모 Vocab 생성 + 음절↔자모 변환 유틸리티
 │   └── vad_segment.py               # Silero-VAD 기반 오디오 세그멘테이션
 │
-├── [이전 시도 (자모 CTC)] — 학습 기록용
-│   ├── finetune_jamo.py             # 자모 vocab CTC 파인튜닝 (wav2vec2)
-│   └── test_jamo_model.py           # 자모 CTC 모델 검증
+├── [iOS 변환 모델]
+│   └── Whisper_CoreML_Model/        # 🍏 ANE 호환 CoreML 변환 완료된 앱 탑재용 모델
 │
-├── [1단계 베이스라인]
-│   ├── pronunciation_scorer.py      # CTC + Greedy Decoding 베이스라인
-│   ├── test_final.py                # 파일/마이크 통합 테스트
-│   ├── test_g2p.py                  # G2P 발음 전사 검증
-│   └── pronunciation_tester.html    # 브라우저 UI 데모
+├── [실패한 파이프라인 (보관용)]
+│   └── legacy_pipelines/            # 이전 시도 (자모 CTC, wav2vec2) 및 관련 실험 코드 모음
 │
 └── README.md
 ```
