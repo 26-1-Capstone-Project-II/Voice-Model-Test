@@ -218,9 +218,32 @@ CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python pronunciation_evaluator.py \
 
 ---
 
-## 🍏 넥스트 스텝 (Phase 4)
-- **iOS 온디바이스 심기:** 최종 파인튜닝된 HuggingFace Whisper 모델을 Apple `CoreML`로 변환(Export).
-- **WhisperKit 통합:** Swift iOS 앱 단말기에서 실시간 마이크 입력과 연동되는 발음 교정 프론트엔드 연결.
+## 🍏 iOS (CoreML) 발음 평가 엔진 연동 가이드
+
+서버에서 훈련된 최고 성능의 Whisper 모델을 iOS 앱(아이폰 등)에서 오프라인으로 쌩쌩하게 돌려볼 수 있도록 Apple 전용 `CoreML (mlmodelc)` 포맷으로 압축 변환해 두었습니다!
+
+### 1️⃣ 모델 다운로드 (Mac 환경)
+모델은 Git LFS 대용량 스토리지에 저장되어 있습니다. Mac 터미널을 열고 기기로 복사해 옵니다.
+
+```bash
+# 1. 깃허브 저장소 클론
+git clone https://github.com/26-1-Capstone-Project-II/Voice-Model-Test.git
+cd Voice-Model-Test
+
+# 2. LFS 용량 제한으로 잘린 모델 파일 원본 받아오기
+git lfs pull
+```
+
+### 2️⃣ Xcode UI 세팅 (SwiftUI 앱)
+1. Mac에서 Xcode를 켜고 새로운 **iOS App (SwiftUI)** 프로젝트를 생성합니다.
+2. `File` > `Add Package Dependencies...` 에서 `https://github.com/argmaxinc/WhisperKit` 을 입력하고 설치합니다.
+3. 방금 다운받은 깃허브 폴더 안에 있는 `Whisper_CoreML_Model` 폴더를 통째로 **Xcode 파일 속성 영역에 드래그 앤 드롭** 합니다. (이 폴더가 아이폰의 AI 뇌가 됩니다!)
+   - **팝업 주의:** `Create groups` 옵션을 선택하세요.
+4. Xcode 프로젝트 설정 탭(Target) `Info` 메뉴에서 **Microphone Usage Description** (마이크 권한)을 "발음 평가를 위해 마이크를 사용합니다." 로 추가합니다.
+
+### 3️⃣ 데모 앱 구동
+저장소에 올려둔 `IOS_Whisper_Test_App.swift` 코드를 열고, Xcode 안의 내 기본 뷰(`ContentView.swift` 등)에 전체 복사/붙여넣기 합니다.
+이후 시뮬레이터나 본인 아이폰 기기로 연결하여 앱을 빌드(Cmd+R) 하면, **소리나는 대로 모두 잡아내는 세상에서 단 하나뿐인 발음 진단기 앱**이 내 폰 안에서 돌아가는 것을 볼 수 있습니다!
 
 ---
 
