@@ -158,41 +158,54 @@ Whisper의 강력한 LM이 자동 수행하던 **맞춤법 교정 동작을, g2p
 - **데이터셋:** [AI Hub 구음장애 음성인식 데이터](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=608)
 - **선정 기준:** 학습에 사용되지 않은 화자(unseen speaker)의 발화 일부 추출
 
-#### 핵심 평가 지표 — "교정하지 않음(Non-Correction Rate)"
-일반적인 ASR 평가의 CER이 낮을수록 좋다는 관점과 **반대**입니다.
-우리 모델은 **틀린 발음을 그대로 받아 적어야 성공**입니다.
+#### 평가 전략 — Baseline-Referenced
+AIHub 라벨에는 sentence-level timestamp가 없어 세션 WAV ↔ 문장 정렬이 불완전합니다.
+이 한계를 우회하기 위해 **베이스라인 Whisper의 출력을 "표준 표기" 기준점**으로 사용합니다.
 
-| 항목 | 비교 대상 | 기대 결과 |
-|------|-----------|-----------|
-| **(A) 원본 Whisper-tiny 출력** | 화자 의도 텍스트(맞춤법) 대비 CER | 자동 교정으로 인해 의도와 유사 (낮은 CER) |
-| **(B) 파인튜닝 모델 출력** | g2pk 기대 발음 대비 CER | 실제 들린 소리 그대로 출력 → 화자가 정확히 발음했을 때만 낮은 CER |
-| **(C) 자모 오류 피드백** | 기대 발음 vs 모델 출력 | 어떤 음소가 어떻게 어긋났는지 구체적 추출 가능 |
+```
+같은 오디오 → 두 모델 동시 추론
+    베이스라인 Whisper:  X (자동 교정된 표준 한국어 표기)
+    파인튜닝 Whisper:    Y (들리는 그대로 = phonetic)
 
-→ **(A) - (B) 차이가 클수록**, 우리 모델이 "맞춤법 보정 없이 발음 그대로"를 학습했다는 증거가 됩니다.
+핵심 비교: Y ≈ g2pk(X) 인가?
+    → 두 모델 출력이 "표기 ↔ 발음" 관계를 자동으로 형성
+    → 라벨 정확도와 무관하게 phonetic-transcription 학습 여부 검증 가능
+```
+
+#### 핵심 측정 지표
+
+| 지표 | 산식 | 의미 |
+|------|------|------|
+| **Phonetic Match CER** | `CER(Y, g2pk(X))` | 핵심. 낮을수록 파인튜닝이 g2pk-변환된 출력을 안정적으로 생성 |
+| **Standard Divergence** | `CER(Y, X)` | 0이 아닐수록 파인튜닝이 베이스라인과 다른 (Raw) 출력 |
+| **Phonetic Match Rate** | `# (Y == g2pk(X)) / total` | 음운변동 적용 정확률 |
+| **Raw Output Rate** | `# (Y != X) / total` | 자동 교정 거부율 |
+| **음운 변동 카테고리** | 자모 치환 → 경음화/구개음화/비음화/연음화 분류 | 어떤 한국어 음운변동을 학습했는가 |
 
 #### 실행 환경
 - **테스트 환경:** Linux 서버 (NVIDIA CUDA GPU)
-- **이유:** 구음장애 데이터셋의 대용량 처리 및 두 모델(원본/파인튜닝) 동시 추론 비교를 위함
+- **이유:** 구음장애 데이터셋 대용량 처리 + 두 모델 동시 추론 비교
 
 ```bash
 # 1단계 — AIHub 원본 데이터를 VAD로 세그멘트 (최초 1회)
 PYTHONNOUSERSITE=1 python vad_segment.py \
-    --wav_dir  "/data/aihub_dysarthria/원천데이터/TS02_언어청각장애" \
-    --json_dir "/data/aihub_dysarthria/라벨링데이터/TL02_언어청각장애" \
+    --wav_dir  "/path/to/aihub/원천데이터" \
+    --json_dir "/path/to/aihub/라벨링데이터" \
     --output_dir ./segmented_dataset
 
-# 2단계 — 베이스라인 vs 파인튜닝 동시 추론 비교
-CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_dysarthria.py \
+# 2단계 — Baseline-Referenced 평가 (라벨 미사용, 짧은 세그먼트만)
+CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_baseline_ref.py \
     --model_path best_model_whisper/best \
     --baseline_model openai/whisper-tiny \
     --json_dir segmented_dataset \
     --num_samples 200 \
-    --output_dir results/aihub_eval
+    --min_dur 1.0 --max_dur 10.0 \
+    --output_dir results/aihub_baseline_ref
 ```
 
 #### 출력 결과
-- `results/aihub_eval/eval_results.json` — 샘플별 상세 결과 (transcript / 기대발음 / 두 모델 출력 / 자모 오류)
-- `results/aihub_eval/summary.md` — 요약 리포트 (자동 교정율, 교정 거부율, 자모 치환 오류 TOP)
+- `results/aihub_baseline_ref/eval_results.json` — 샘플별 X / g2pk(X) / Y 3-way 비교 + CER + 음운변동 분류
+- `results/aihub_baseline_ref/summary.md` — 요약 리포트 (Phonetic Match Rate, 음운 변동 카테고리별 횟수, TOP 자모 치환)
 
 ---
 
