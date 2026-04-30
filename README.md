@@ -144,43 +144,39 @@ Whisper의 강력한 LM이 자동 수행하던 **맞춤법 교정 동작을, g2p
 
 ---
 
-### 2차 검증 — AIHub 구음장애 데이터셋 (타깃 도메인 효과 증명) ⭐
+### 2차 검증 — AIHub 구음장애 데이터셋 (사용자 효용 검증) ⭐
 
-> **목적:** 본 앱의 실 사용자인 **청각장애인의 발화에 대한 모델의 효과를 간접적으로 증명**합니다.
-> 청각장애인 음성 데이터의 직접 확보가 어려우므로, **음향적 특성이 유사한 구음장애(Dysarthria) 음성**을 대리 지표(Proxy)로 활용합니다.
+> **목적:** **구음장애를 가진 분들이 본 앱을 사용해야 하는 이유**를 정량적으로 입증합니다.
+> 본 검증은 모델 정확도(CER)가 아니라 **앱 사용 가치**를 측정합니다.
 
-#### 왜 구음장애 데이터로 검증하는가
-- 청각장애인의 발화는 청각 피드백 부재로 인해 표준 발음에서 벗어난 **비전형적(non-canonical) 발음**을 보이는 경우가 많습니다.
-- 구음장애 발화 역시 조음 기관의 제약으로 표준 발음에서 벗어나는 공통점을 가집니다.
-- 따라서 구음장애 음성에서 모델이 **"틀린 발음을 교정 없이 들리는 그대로 출력하는지"** 를 확인하면, 청각장애인 사용 시의 동작을 간접적으로 검증할 수 있습니다.
+#### 왜 CER이 아닌 사용자 효용을 측정하는가
+- Zeroth-Korean 검증(1차)은 정상 발음 데이터에서의 *전사 정확도*를 측정 (CER 0.088 달성)
+- 그러나 구음장애 화자에게는 **"내 발음이 표준에서 어떻게 어긋났는지 *볼 수 있는가*"** 가 핵심
+- 따라서 2차 검증은 **사용자가 일반 ASR 대비 추가로 얻는 정보·진단 능력**을 측정
 
 #### 사용 데이터셋
 - **데이터셋:** [AI Hub 구음장애 음성인식 데이터](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=608)
 - **선정 기준:** 학습에 사용되지 않은 화자(unseen speaker)의 발화 일부 추출
 
-#### 평가 전략 — Baseline-Referenced
-AIHub 라벨에는 sentence-level timestamp가 없어 세션 WAV ↔ 문장 정렬이 불완전합니다.
-이 한계를 우회하기 위해 **베이스라인 Whisper의 출력을 "표준 표기" 기준점**으로 사용합니다.
+#### 평가 메커니즘
+같은 오디오를 두 모델에 동시 입력하여 출력 차이를 분석:
 
 ```
-같은 오디오 → 두 모델 동시 추론
-    베이스라인 Whisper:  X (자동 교정된 표준 한국어 표기)
-    파인튜닝 Whisper:    Y (들리는 그대로 = phonetic)
+                  X = 베이스라인 Whisper-tiny  (자동 교정된 표준 한국어 표기)
+오디오 →  분기  ↗
+                  Y = 파인튜닝 모델            (들리는 그대로의 발음 표기)
 
-핵심 비교: Y ≈ g2pk(X) 인가?
-    → 두 모델 출력이 "표기 ↔ 발음" 관계를 자동으로 형성
-    → 라벨 정확도와 무관하게 phonetic-transcription 학습 여부 검증 가능
+         X와 Y의 자모-수준 차이 = 본 앱이 사용자에게 노출하는 추가 정보
 ```
 
-#### 핵심 측정 지표
+#### 4가지 가치 명제와 측정 지표
 
-| 지표 | 산식 | 의미 |
-|------|------|------|
-| **Phonetic Match CER** | `CER(Y, g2pk(X))` | 핵심. 낮을수록 파인튜닝이 g2pk-변환된 출력을 안정적으로 생성 |
-| **Standard Divergence** | `CER(Y, X)` | 0이 아닐수록 파인튜닝이 베이스라인과 다른 (Raw) 출력 |
-| **Phonetic Match Rate** | `# (Y == g2pk(X)) / total` | 음운변동 적용 정확률 |
-| **Raw Output Rate** | `# (Y != X) / total` | 자동 교정 거부율 |
-| **음운 변동 카테고리** | 자모 치환 → 경음화/구개음화/비음화/연음화 분류 | 어떤 한국어 음운변동을 학습했는가 |
+| 가치 명제 | 사용자 관점 | 측정 지표 |
+|----------|------------|----------|
+| **V1. 솔직한 피드백** | "다른 앱은 내 오류를 정답으로 바꿔서 보여주지만, 이 앱은 실제 소리를 보여줌" | **M1.** Auto-Correction Rejection Rate: `# (Y ≠ X) / total` |
+| **V2. 정보 가시성** | "내 발음이 표준에서 어떻게 어긋났는지 *볼 수 있다*" | **M2.** Information Disclosure: `jamo_edit_distance(Y, X)` 평균 |
+| **V3. 진단 구체성** | "ㅁ을 ㅂ으로 발음하고 있다는 걸 정확히 짚어줌" | **M3.** Feedback Density (한국어 음운규칙 부합 차이/발화)<br>**M4.** Diagnosis Coverage (경음화/비음화/구개음화/연음화 분포) |
+| **V4. 일관성** | "내 발음 약점이 매번 같은 곳에서 나타나니, 거기를 집중 연습 가능" | **M5.** Per-Speaker Consistency: 동일 화자 발화에서 동일 자모 치환 패턴 반복률 |
 
 #### 실행 환경
 - **테스트 환경:** Linux 서버 (NVIDIA CUDA GPU)
@@ -193,19 +189,19 @@ PYTHONNOUSERSITE=1 python vad_segment.py \
     --json_dir "/path/to/aihub/라벨링데이터" \
     --output_dir ./segmented_dataset
 
-# 2단계 — Baseline-Referenced 평가 (라벨 미사용, 짧은 세그먼트만)
+# 2단계 — 사용자 효용 검증 (V1-V4 측정)
 CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_baseline_ref.py \
     --model_path best_model_whisper/best \
     --baseline_model openai/whisper-tiny \
     --json_dir segmented_dataset \
     --num_samples 200 \
     --min_dur 1.0 --max_dur 10.0 \
-    --output_dir results/aihub_baseline_ref
+    --output_dir results/aihub_value_proposition
 ```
 
 #### 출력 결과
-- `results/aihub_baseline_ref/eval_results.json` — 샘플별 X / g2pk(X) / Y 3-way 비교 + CER + 음운변동 분류
-- `results/aihub_baseline_ref/summary.md` — 요약 리포트 (Phonetic Match Rate, 음운 변동 카테고리별 횟수, TOP 자모 치환)
+- `results/aihub_value_proposition/eval_results.json` — 샘플별 X / Y / 자모 차이 / 음운변동 분류 / speaker_id 메타데이터
+- `results/aihub_value_proposition/summary.md` — V1-V4 입증 리포트 + 음운변동 카테고리별 시연 케이스 (자동 큐레이션)
 
 ---
 
