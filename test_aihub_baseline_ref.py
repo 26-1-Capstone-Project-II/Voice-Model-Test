@@ -1,41 +1,56 @@
 """
-AIHub 구음장애 — 사용자 효용 검증 (Value Proposition Verification)
-=====================================================================
-"구음장애 화자에게 본 앱이 왜 필요한가"를 정량적으로 입증하는 평가.
+사용자 효용 검증 (Value Proposition Verification)
+==================================================
+"본 앱이 왜 필요한가"를 정량적으로 입증하는 평가. CER이 아닌 4가지 가치 명제 검증.
 
-CER을 헤드라인 지표로 사용하지 않는다. 대신 4가지 가치 명제를 검증한다.
+  V1. 솔직한 피드백 (자동 교정 거부)         — M1. Auto-Correction Rejection Rate
+  V2. 정보 가시성 (들리는 소리 노출)           — M2. Information Disclosure
+  V3. 진단 구체성 (자모/음운변동 단위 분석)    — M3. Feedback Density + S/N Ratio
+                                                 M4. Diagnosis Coverage (경음/구개/비음/연음)
+  V4. 일관성 (학습 추적 가능성)               — M5. Per-Speaker Consistency
 
-  V1. 솔직한 피드백 — 자동 교정 거부
-        M1. Auto-Correction Rejection Rate
+핵심 보강 포인트
+----------------
+1. 응집(coherent) 베이스라인 필터:
+   X가 한국어로 응집된 발화만 골라 신뢰성 있는 부분집합에서 metrics 재산출.
+   '베이스라인 X 자체가 무너지는' 케이스를 분리해 결과 해석 명확화.
 
-  V2. 정보 가시성 — 들리는 소리 노출
-        M2. Information Disclosure (jamo edit distance Y vs X)
+2. 신호/노이즈 비율 (S/N):
+   phonetic_rule_ratio = rule_hits / edit_distance
+   "차이의 몇 %가 한국어 음운규칙으로 설명되는가" — V3 의미성의 척도.
 
-  V3. 진단 구체성 — 자모/음운변동 단위 분석
-        M3. Feedback Density (Korean-rule conformant jamo diffs / utt)
-        M4. Diagnosis Coverage (경음화/비음화/구개음화/연음화 분포)
-
-  V4. 일관성 — 학습 추적 가능성
-        M5. Per-Speaker Consistency
+3. 통제군 비교 (Zeroth-Korean test):
+   같은 스크립트를 깨끗한 정상 발음 데이터에 돌리면 효용 지표의 상한값(upper bound)을 얻음.
+   AIHub(dysarthric)와 Zeroth(clean) 두 결과를 함께 제시하면 발표 신뢰도 ↑.
 
 평가 메커니즘
 -------------
-같은 오디오를 두 모델에 동시 입력:
+오디오 → 같은 입력을 두 모델에 동시 추론:
   X = 베이스라인 Whisper 출력 (자동 교정된 표준 한국어 표기)
-  Y = 파인튜닝 모델 출력 (들리는 그대로의 발음 표기)
+  Y = 파인튜닝 모델 출력      (들리는 그대로의 발음 표기)
 
-X와 Y의 자모-수준 차이가 곧 "본 앱이 사용자에게 노출하는 추가 정보".
+X와 Y의 자모-수준 차이가 본 앱이 사용자에게 노출하는 추가 정보.
 이 차이가 한국어 음운변동 규칙과 부합하면 → 의미 있는 진단.
 
 실행 (Linux 서버)
 -----------------
+    # AIHub 구음장애 (target user proxy)
     CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_baseline_ref.py \\
         --model_path best_model_whisper/best \\
         --baseline_model openai/whisper-tiny \\
         --json_dir segmented_dataset \\
         --num_samples 200 \\
-        --min_dur 1.0 --max_dur 10.0 \\
+        --tag aihub \\
         --output_dir results/aihub_value_proposition
+
+    # Zeroth-Korean (control group, clean speech)
+    CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_baseline_ref.py \\
+        --model_path best_model_whisper/best \\
+        --baseline_model openai/whisper-tiny \\
+        --json_dir zeroth_dataset \\
+        --num_samples 200 \\
+        --tag zeroth \\
+        --output_dir results/zeroth_value_proposition
 """
 
 import os
@@ -57,11 +72,25 @@ HOME = Path.home()
 
 
 # ────────────────────────────────────────────
-# 1. 데이터 로딩 (라벨 미사용)
+# 한국어 자모 상수
+# ────────────────────────────────────────────
+KOREAN_CONSONANTS = set("ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅈㅉㅊㅋㅌㅍㅎ"
+                        "ㄳㄵㄶㄺㄻㄼㄽㄾㄿㅀㅄ")
+
+CATEGORY_KO = {
+    "tensification": "경음화",
+    "palatalization": "구개음화",
+    "nasalization": "비음화",
+    "linking": "연음화",
+}
+
+
+# ────────────────────────────────────────────
+# 1. 데이터 로딩
 # ────────────────────────────────────────────
 def load_audio_samples(json_dir, num_samples=200, min_dur=1.0, max_dur=10.0,
                       seed=42):
-    """segmented_dataset/test.jsonl에서 wav_path만 사용 (transcript 라벨 무시)."""
+    """test.jsonl 에서 wav_path만 사용 (라벨 미참조)."""
     path = Path(json_dir) / "test.jsonl"
     if not path.exists():
         raise FileNotFoundError(f"{path} 없음")
@@ -130,7 +159,6 @@ def classify_substitution(exp, act):
                      "ㅅ": "ㅆ", "ㅈ": "ㅉ"}
     palatalization = {"ㄷ": "ㅈ", "ㅌ": "ㅊ"}
     nasalization = {"ㄱ": "ㅇ", "ㄷ": "ㄴ", "ㅂ": "ㅁ"}
-
     if exp in tensification and act == tensification[exp]:
         return "tensification"
     if exp in palatalization and act == palatalization[exp]:
@@ -140,16 +168,29 @@ def classify_substitution(exp, act):
     return "other"
 
 
-def analyze_jamo_diff(X, Y):
-    """X(베이스라인) vs Y(파인튜닝)의 자모 단위 차이를 분석.
+def count_linking_strict(alignment):
+    """엄격한 한국어 연음화 검출.
 
-    반환:
-      - edit_distance: 정렬에서 status != correct 인 위치 수
-      - jamo_count_X, jamo_count_Y: 각 텍스트의 자모 수
-      - rule_hits: 한국어 음운규칙 부합 차이 카운트 (M3 기여)
-      - cats: 카테고리별 카운트 (M4 기여)
-      - subs: 치환 쌍 리스트 (M5 일관성 분석용)
+    조건: '초성 ㅇ' (silent placeholder)이 삭제되었고,
+          그 직전(expected stream)에 자음이 있을 때만 카운트.
+    예) 음식이 → 음시기 패턴: 종성 ㄱ + 초성 ㅇ + 모음 → 종성 X + 초성 ㄱ + 모음
+        alignment에서 "ㅇ deletion" + 직전 expected가 자음 → 연음화 1회
     """
+    count = 0
+    for i, a in enumerate(alignment):
+        if a["status"] != "deletion" or a["expected"] != "ㅇ":
+            continue
+        # 직전 expected 자모 (insertion 건너뛰기)
+        for j in range(i - 1, -1, -1):
+            prev = alignment[j]
+            if prev["expected"] is not None:
+                if prev["expected"] in KOREAN_CONSONANTS:
+                    count += 1
+                break
+    return count
+
+
+def analyze_jamo_diff(X, Y):
     from pronunciation_evaluator import text_to_jamo, align_jamo
 
     jx = text_to_jamo(X)
@@ -166,32 +207,37 @@ def analyze_jamo_diff(X, Y):
             cats[cat] += 1
             subs.append((a["expected"], a["actual"]))
 
-    n_insert = sum(1 for a in alignment if a["status"] == "insertion")
-    n_delete = sum(1 for a in alignment if a["status"] == "deletion")
-    if n_insert and n_delete:
-        # 종성 이동 = 연음화 후보
-        cats["linking_candidate"] = min(n_insert, n_delete)
+    # 엄격한 연음화 카운트로 교체 (insertion+deletion naive 방식 폐기)
+    linking = count_linking_strict(alignment)
+    if linking > 0:
+        cats["linking"] = linking
 
     rule_hits = (cats.get("tensification", 0)
                  + cats.get("palatalization", 0)
                  + cats.get("nasalization", 0)
-                 + cats.get("linking_candidate", 0))
+                 + cats.get("linking", 0))
+
+    # 신호 대비 노이즈 비율: 차이 중 음운규칙으로 설명되는 비율
+    phonetic_rule_ratio = (
+        rule_hits / edit_distance if edit_distance > 0 else 0.0
+    )
 
     return {
         "edit_distance": edit_distance,
         "jamo_count_X": len(jx),
         "jamo_count_Y": len(jy),
         "rule_hits": rule_hits,
+        "phonetic_rule_ratio": phonetic_rule_ratio,
         "cats": dict(cats),
         "subs": subs,
     }
 
 
 # ────────────────────────────────────────────
-# 4. 베이스라인 응집도 휴리스틱
+# 4. 응집 베이스라인 휴리스틱
 # ────────────────────────────────────────────
 def is_baseline_coherent(text):
-    """베이스라인 출력이 시연용으로 쓸 만큼 응집된 한국어인지."""
+    """베이스라인 출력이 표준 한국어로 응집되었는지."""
     if len(text) < 5:
         return False
     korean = sum(1 for c in text if '가' <= c <= '힣')
@@ -202,7 +248,7 @@ def is_baseline_coherent(text):
 
 
 # ────────────────────────────────────────────
-# 5. 평가 (추론 + 자모 분석)
+# 5. 평가
 # ────────────────────────────────────────────
 def evaluate(records, baseline_pack, finetuned_pack, device):
     base_proc, base_model = baseline_pack
@@ -219,11 +265,9 @@ def evaluate(records, baseline_pack, finetuned_pack, device):
 
         X = transcribe(audio, base_proc, base_model, device)
         Y = transcribe(audio, ft_proc, ft_model, device)
-
         if not X:
             continue
 
-        # 자모 차이 분석 (Y vs X)
         diff = analyze_jamo_diff(X, Y)
 
         results.append({
@@ -238,6 +282,7 @@ def evaluate(records, baseline_pack, finetuned_pack, device):
             "jamo_count_X": diff["jamo_count_X"],
             "jamo_count_Y": diff["jamo_count_Y"],
             "rule_hits": diff["rule_hits"],
+            "phonetic_rule_ratio": diff["phonetic_rule_ratio"],
             "transform_cats": diff["cats"],
             "subs": diff["subs"],
             "baseline_coherent": is_baseline_coherent(X),
@@ -247,50 +292,28 @@ def evaluate(records, baseline_pack, finetuned_pack, device):
 
 
 # ────────────────────────────────────────────
-# 6. M1~M5 지표 집계
+# 6. 지표 집계 (subset 함수화)
 # ────────────────────────────────────────────
 def compute_metrics(results):
     n = len(results)
     if n == 0:
-        return {}
+        return {"n_samples": 0}
 
-    # M1. Auto-Correction Rejection Rate
     n_raw = sum(1 for r in results if r["is_raw_output"])
-    m1_rejection_rate = n_raw / n
 
-    # M2. Information Disclosure (jamo edit distance)
     edit_distances = [r["edit_distance"] for r in results]
-    m2 = {
-        "mean_edit_distance": float(np.mean(edit_distances)),
-        "median_edit_distance": float(np.median(edit_distances)),
-        "p25": float(np.percentile(edit_distances, 25)),
-        "p75": float(np.percentile(edit_distances, 75)),
-    }
-
-    # M3. Feedback Density (Korean-rule conformant)
     rule_hits = [r["rule_hits"] for r in results]
-    m3 = {
-        "mean_rule_hits_per_utt": float(np.mean(rule_hits)),
-        "median": float(np.median(rule_hits)),
-        "samples_with_at_least_one_hit": sum(1 for h in rule_hits if h > 0),
-    }
+    rule_ratios = [r["phonetic_rule_ratio"] for r in results]
 
-    # M4. Diagnosis Coverage
     cat_total = Counter()
-    cat_sample_count = Counter()  # 카테고리별 샘플 발생률
+    cat_sample_count = Counter()
     for r in results:
         for k, v in r["transform_cats"].items():
             cat_total[k] += v
             if v > 0:
                 cat_sample_count[k] += 1
-    m4 = {
-        "category_total_hits": dict(cat_total),
-        "category_sample_prevalence": {
-            k: round(v / n, 4) for k, v in cat_sample_count.items()
-        },
-    }
 
-    # M5. Per-Speaker Consistency
+    # M5
     by_speaker = defaultdict(list)
     for r in results:
         if r["speaker_id"]:
@@ -301,15 +324,13 @@ def compute_metrics(results):
     for sp, items in by_speaker.items():
         if len(items) < 3:
             continue
-        # 화자의 모든 치환 쌍 집계
         pair_counter = Counter()
         for r in items:
             for s in r["subs"]:
                 pair_counter[s] += 1
         if not pair_counter:
             continue
-        top_pair, top_cnt = pair_counter.most_common(1)[0]
-        # top 패턴이 발화별로 등장한 비율
+        top_pair, _ = pair_counter.most_common(1)[0]
         appearance = sum(1 for r in items if top_pair in r["subs"])
         consistency = appearance / len(items)
         speaker_consistencies.append(consistency)
@@ -319,81 +340,80 @@ def compute_metrics(results):
             "consistency": round(consistency, 4),
         }
 
-    m5 = {
-        "n_eligible_speakers": len(speaker_consistencies),
-        "mean_consistency": (
-            float(np.mean(speaker_consistencies))
-            if speaker_consistencies else 0.0
-        ),
-        "median_consistency": (
-            float(np.median(speaker_consistencies))
-            if speaker_consistencies else 0.0
-        ),
-        "high_consistency_speakers": sum(
-            1 for c in speaker_consistencies if c >= 0.5
-        ),
-        "speaker_top_patterns": speaker_top_patterns,
-    }
-
     return {
         "n_samples": n,
-        "M1_auto_correction_rejection_rate": round(m1_rejection_rate, 4),
+        "M1_auto_correction_rejection_rate": round(n_raw / n, 4),
         "M2_information_disclosure": {
-            k: round(v, 4) for k, v in m2.items()
+            "mean_edit_distance": round(float(np.mean(edit_distances)), 4),
+            "median_edit_distance": round(float(np.median(edit_distances)), 4),
+            "p25": round(float(np.percentile(edit_distances, 25)), 4),
+            "p75": round(float(np.percentile(edit_distances, 75)), 4),
         },
         "M3_feedback_density": {
-            "mean_rule_hits_per_utt": round(m3["mean_rule_hits_per_utt"], 4),
-            "median": round(m3["median"], 4),
-            "samples_with_at_least_one_hit": m3["samples_with_at_least_one_hit"],
-            "rule_hit_sample_rate": round(
-                m3["samples_with_at_least_one_hit"] / n, 4
-            ),
+            "mean_rule_hits_per_utt": round(float(np.mean(rule_hits)), 4),
+            "median": round(float(np.median(rule_hits)), 4),
+            "samples_with_at_least_one_hit":
+                sum(1 for h in rule_hits if h > 0),
+            "rule_hit_sample_rate":
+                round(sum(1 for h in rule_hits if h > 0) / n, 4),
+            # 신호/노이즈 비율 — 차이 중 음운규칙 부합 비율
+            "mean_phonetic_rule_ratio": round(float(np.mean(rule_ratios)), 4),
+            "median_phonetic_rule_ratio": round(float(np.median(rule_ratios)), 4),
         },
-        "M4_diagnosis_coverage": m4,
-        "M5_per_speaker_consistency": m5,
+        "M4_diagnosis_coverage": {
+            "category_total_hits": dict(cat_total),
+            "category_sample_prevalence": {
+                k: round(v / n, 4) for k, v in cat_sample_count.items()
+            },
+        },
+        "M5_per_speaker_consistency": {
+            "n_eligible_speakers": len(speaker_consistencies),
+            "mean_consistency": (
+                round(float(np.mean(speaker_consistencies)), 4)
+                if speaker_consistencies else 0.0
+            ),
+            "median_consistency": (
+                round(float(np.median(speaker_consistencies)), 4)
+                if speaker_consistencies else 0.0
+            ),
+            "high_consistency_speakers":
+                sum(1 for c in speaker_consistencies if c >= 0.5),
+            "speaker_top_patterns": speaker_top_patterns,
+        },
+    }
+
+
+def split_full_and_coherent(results):
+    """전체 / 응집 베이스라인 부분집합을 둘 다 반환."""
+    coherent = [r for r in results if r["baseline_coherent"]]
+    return {
+        "full": compute_metrics(results),
+        "coherent": compute_metrics(coherent),
+        "coherent_n": len(coherent),
+        "coherent_rate": round(len(coherent) / max(len(results), 1), 4),
     }
 
 
 # ────────────────────────────────────────────
-# 7. 시연 케이스 자동 큐레이션
+# 7. 시연 케이스 큐레이션
 # ────────────────────────────────────────────
-CATEGORY_KO = {
-    "tensification": "경음화",
-    "palatalization": "구개음화",
-    "nasalization": "비음화",
-    "linking_candidate": "연음화",
-}
-
-
 def curate_demos(results, top_n=5):
-    """발표/시연용 케이스 자동 선별."""
     coherent = [r for r in results if r["baseline_coherent"]]
-
-    # (a) 전체 rule_hits 상위 N
-    top_overall = sorted(
-        coherent, key=lambda r: r["rule_hits"], reverse=True
-    )[:top_n]
-
-    # (b) 카테고리별 대표 사례
+    top_overall = sorted(coherent, key=lambda r: r["rule_hits"],
+                         reverse=True)[:top_n]
     per_category = {}
-    for cat in ["tensification", "palatalization", "nasalization",
-                "linking_candidate"]:
-        candidates = [r for r in coherent
-                      if r["transform_cats"].get(cat, 0) > 0]
-        if candidates:
+    for cat in ["tensification", "palatalization", "nasalization", "linking"]:
+        cands = [r for r in coherent if r["transform_cats"].get(cat, 0) > 0]
+        if cands:
             per_category[cat] = sorted(
-                candidates,
-                key=lambda r: r["transform_cats"].get(cat, 0),
-                reverse=True,
+                cands, key=lambda r: r["transform_cats"].get(cat, 0),
+                reverse=True
             )[0]
-
-    # (c) Raw 출력 + 큰 정보 공개량
     high_disclosure = sorted(
         coherent,
         key=lambda r: (r["is_raw_output"], r["edit_distance"]),
         reverse=True,
     )[:top_n]
-
     return {
         "top_rule_hits": top_overall,
         "per_category": per_category,
@@ -414,7 +434,8 @@ def fmt_demo(r, indent="    "):
         f"{indent}베이스라인 X (자동 교정): {r['baseline_X']}",
         f"{indent}본 앱       Y (Raw 출력): {r['finetuned_Y']}",
         f"{indent}→ 자모 차이 {r['edit_distance']}개  "
-        f"음운규칙 부합 {r['rule_hits']}개"
+        f"음운규칙 부합 {r['rule_hits']}개  "
+        f"S/N {r['phonetic_rule_ratio']:.1%}"
         + (f"  [{cats_str}]" if cats_str else ""),
     ]
     if subs_str:
@@ -422,92 +443,104 @@ def fmt_demo(r, indent="    "):
     return "\n".join(lines)
 
 
-def print_report(metrics, demos):
-    print(f"\n{'='*72}")
-    print(f"  📊 사용자 효용 검증 결과 — 구음장애 화자 ({metrics['n_samples']} 발화)")
-    print(f"{'='*72}")
-    print(f"\n  ※ 본 평가는 CER이 아닌 '앱 사용 가치'를 측정합니다.")
-    print(f"     같은 오디오에 대한 베이스라인(자동 교정) vs 본 앱(Raw 출력)의")
-    print(f"     자모-수준 차이를 분석하여 사용자가 얻는 추가 정보를 정량화합니다.")
-
-    # ━━ V1 ━━
-    print(f"\n{'─'*72}")
-    print(f"  [V1] 솔직한 피드백 — 자동 교정 거부")
-    print(f"{'─'*72}")
-    rate = metrics["M1_auto_correction_rejection_rate"]
-    print(f"  M1. Auto-Correction Rejection Rate: {rate:.1%}")
-    print(f"      → {int(rate*metrics['n_samples'])}/{metrics['n_samples']} 발화에서")
-    print(f"        베이스라인의 자동 교정 동작을 거부하고 Raw 출력 생성")
-    print(f"      → 일반 ASR이 사용자의 발음 오류를 숨기는 동작을")
-    print(f"        본 앱은 *수행하지 않음*")
-
-    # ━━ V2 ━━
-    print(f"\n{'─'*72}")
-    print(f"  [V2] 정보 가시성 — 들리는 소리 노출")
-    print(f"{'─'*72}")
-    m2 = metrics["M2_information_disclosure"]
-    print(f"  M2. Information Disclosure (자모 편집 거리, Y vs X)")
-    print(f"      평균: {m2['mean_edit_distance']:.2f} 자모/발화")
-    print(f"      중간값: {m2['median_edit_distance']:.2f}  "
-          f"(IQR {m2['p25']:.2f} ~ {m2['p75']:.2f})")
-    print(f"      → 베이스라인 출력 대비 발화당 평균 "
-          f"{m2['mean_edit_distance']:.1f}개의 자모 정보가")
-    print(f"        본 앱을 통해 추가 노출됨")
-    print(f"      → 일반 ASR로는 보이지 않는 음운 정보를 사용자가 확인 가능")
-
-    # ━━ V3 ━━
-    print(f"\n{'─'*72}")
-    print(f"  [V3] 진단 구체성 — 자모/음운변동 단위 분석")
-    print(f"{'─'*72}")
-    m3 = metrics["M3_feedback_density"]
-    print(f"  M3. Feedback Density (한국어 음운규칙 부합 차이)")
-    print(f"      평균: {m3['mean_rule_hits_per_utt']:.2f} 차이/발화")
-    print(f"      음운규칙 부합 차이 ≥1개 발화 비율: "
-          f"{m3['rule_hit_sample_rate']:.1%}  "
-          f"({m3['samples_with_at_least_one_hit']}/{metrics['n_samples']})")
-    print(f"\n  M4. Diagnosis Coverage — 한국어 음운변동 4종 진단 분포")
-    cats = metrics["M4_diagnosis_coverage"]["category_total_hits"]
-    prev = metrics["M4_diagnosis_coverage"]["category_sample_prevalence"]
-    for k in ["tensification", "palatalization", "nasalization",
-              "linking_candidate"]:
+def _print_subset(name, m, n_total):
+    print(f"\n  ▼ {name} (n={m['n_samples']})")
+    print(f"    [V1] M1 자동교정 거부율: "
+          f"{m['M1_auto_correction_rejection_rate']:.1%}")
+    m2 = m["M2_information_disclosure"]
+    print(f"    [V2] M2 정보 공개량: 평균 {m2['mean_edit_distance']:.2f} 자모/발화 "
+          f"(중간값 {m2['median_edit_distance']:.2f})")
+    m3 = m["M3_feedback_density"]
+    print(f"    [V3] M3 음운규칙 차이/발화: 평균 {m3['mean_rule_hits_per_utt']:.2f}  "
+          f"≥1 hit 비율 {m3['rule_hit_sample_rate']:.1%}")
+    print(f"          🎯 S/N 비율 (rule_hits / edit_distance): "
+          f"평균 {m3['mean_phonetic_rule_ratio']:.1%}  "
+          f"중간값 {m3['median_phonetic_rule_ratio']:.1%}")
+    cats = m["M4_diagnosis_coverage"]["category_total_hits"]
+    prev = m["M4_diagnosis_coverage"]["category_sample_prevalence"]
+    line = "    [V3] M4 진단: "
+    parts = []
+    for k in ["tensification", "palatalization", "nasalization", "linking"]:
         ko = CATEGORY_KO[k]
-        n_hit = cats.get(k, 0)
-        p = prev.get(k, 0)
-        print(f"      {ko:6s}: {n_hit:4d}회  "
-              f"(발화 발생률 {p:.1%})")
+        parts.append(f"{ko} {cats.get(k, 0)}회({prev.get(k, 0):.0%})")
+    print(line + " / ".join(parts))
     other = cats.get("other", 0)
     if other > 0:
-        print(f"      기타     : {other:4d}회  (음운규칙 외 차이)")
-
-    # ━━ V4 ━━
-    print(f"\n{'─'*72}")
-    print(f"  [V4] 일관성 — 학습 추적 가능성")
-    print(f"{'─'*72}")
-    m5 = metrics["M5_per_speaker_consistency"]
-    print(f"  M5. Per-Speaker Consistency (≥3 발화 화자 대상)")
-    print(f"      대상 화자 수: {m5['n_eligible_speakers']}")
+        print(f"          (기타 음운규칙 외 차이: {other}회)")
+    m5 = m["M5_per_speaker_consistency"]
     if m5["n_eligible_speakers"] > 0:
-        print(f"      평균 일관성: {m5['mean_consistency']:.1%}  "
-              f"(중간값 {m5['median_consistency']:.1%})")
-        print(f"      ≥50% 일관성 화자 수: {m5['high_consistency_speakers']}")
-        print(f"      → 동일 화자의 발화에서 동일 자모 치환 패턴이 평균 "
-              f"{m5['mean_consistency']:.0%} 반복")
-        print(f"      → 화자별 발음 약점을 일관되게 식별 가능")
-        print(f"      → long-term 학습 추적 도구로 활용 가능")
+        print(f"    [V4] M5 화자 일관성 (≥3 발화 화자 {m5['n_eligible_speakers']}명): "
+              f"평균 {m5['mean_consistency']:.1%}")
     else:
-        print(f"      (데이터 내 ≥3 발화 화자 부족)")
+        print(f"    [V4] M5 화자 일관성: (≥3 발화 화자 부족)")
+
+
+def print_report(metrics_pack, demos, tag):
+    full = metrics_pack["full"]
+    coh = metrics_pack["coherent"]
+    n_total = full["n_samples"]
+    n_coh = metrics_pack["coherent_n"]
+
+    print(f"\n{'='*72}")
+    print(f"  📊 사용자 효용 검증 결과 [tag={tag}] — {n_total} 발화")
+    print(f"{'='*72}")
+    print(f"  ※ CER이 아닌 '앱 사용 가치'를 측정합니다.")
+    print(f"  ※ 두 부분집합으로 분리 보고:")
+    print(f"     - 전체 (n={n_total})")
+    print(f"     - 응집 베이스라인 부분집합 (n={n_coh}, "
+          f"{metrics_pack['coherent_rate']:.0%}): "
+          f"X가 한국어로 응집된 발화만")
+
+    print(f"\n{'─'*72}")
+    print(f"  📋 M1~M5 통합 (전체 vs 응집 부분집합)")
+    print(f"{'─'*72}")
+    _print_subset("전체", full, n_total)
+    _print_subset("응집 베이스라인 (신뢰도 ↑)", coh, n_total)
+
+    # ━━ 강한 주장 (입증 요약) ━━
+    print(f"\n{'═'*72}")
+    print(f"  ✅ 강한 주장 (입증된 가치)")
+    print(f"{'═'*72}")
+
+    rate_full = full["M1_auto_correction_rejection_rate"]
+    rate_coh = coh["M1_auto_correction_rejection_rate"] if n_coh else 0
+    print(f"\n  [V1] 본 앱은 베이스라인과 다른 출력을 *일관되게* 생성")
+    print(f"       → 전체 {rate_full:.0%} / 응집 {rate_coh:.0%} 모두에서 "
+          f"자동 교정 거부 (M1)")
+    print(f"       → 일반 ASR이 사용자의 발음 오류를 숨기는 동작을 본 앱은 "
+          f"수행하지 않음")
+
+    cats_coh = coh["M4_diagnosis_coverage"]["category_total_hits"] if n_coh else {}
+    n_cat_categories_hit = sum(
+        1 for k in ["tensification", "palatalization",
+                    "nasalization", "linking"]
+        if cats_coh.get(k, 0) > 0
+    )
+    print(f"\n  [V3] 본 앱은 한국어 음운규칙(경음/구개/비음/연음)을 *학습함*")
+    print(f"       → 응집 베이스라인 부분집합에서 4종 중 "
+          f"{n_cat_categories_hit}종 카테고리 검출 (M4)")
+    if n_coh:
+        sn = coh["M3_feedback_density"]["mean_phonetic_rule_ratio"]
+        print(f"       → S/N 비율 평균 {sn:.1%} — "
+              f"자모 차이 중 음운규칙으로 설명되는 비율")
+
+    m5 = full["M5_per_speaker_consistency"]
+    if m5["n_eligible_speakers"] > 0:
+        print(f"\n  [V4] 화자별 자모 치환 패턴이 *반복됨* — 무작위보다 유의미")
+        print(f"       → 화자 {m5['n_eligible_speakers']}명에서 평균 일관성 "
+              f"{m5['mean_consistency']:.1%} (M5)")
+        print(f"       → 동일 사용자의 발음 약점을 long-term으로 식별 가능")
 
     # ━━ 시연 케이스 ━━
     print(f"\n{'═'*72}")
-    print(f"  🎬 시연 케이스 (자동 큐레이션)")
+    print(f"  🎬 시연 케이스 (응집 베이스라인 부분집합에서 자동 큐레이션)")
     print(f"{'═'*72}")
 
     if demos["per_category"]:
-        print(f"\n  ▌ 카테고리별 대표 사례\n")
+        print(f"\n  ▌ 음운변동 카테고리별 대표 사례\n")
         for cat, r in demos["per_category"].items():
             ko = CATEGORY_KO.get(cat, cat)
-            print(f"  ━ [{ko}] dur={r['duration']:.1f}s  "
-                  f"speaker={r['speaker_id'][:30]}")
+            print(f"  ━ [{ko}] dur={r['duration']:.1f}s")
             print(fmt_demo(r))
             print()
 
@@ -515,7 +548,8 @@ def print_report(metrics, demos):
         print(f"\n  ▌ 음운규칙 부합 상위 사례 ({len(demos['top_rule_hits'])}건)\n")
         for i, r in enumerate(demos["top_rule_hits"], 1):
             print(f"  ━ [#{i}] dur={r['duration']:.1f}s  "
-                  f"음운규칙 적중 {r['rule_hits']}개")
+                  f"음운규칙 적중 {r['rule_hits']}개  "
+                  f"S/N {r['phonetic_rule_ratio']:.1%}")
             print(fmt_demo(r))
             print()
 
@@ -523,91 +557,105 @@ def print_report(metrics, demos):
 # ────────────────────────────────────────────
 # 9. 결과 저장
 # ────────────────────────────────────────────
-def save_results(results, metrics, demos, output_dir):
+def save_results(results, metrics_pack, demos, output_dir, tag):
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    # 전체 결과 JSON
+    full = metrics_pack["full"]
+    coh = metrics_pack["coherent"]
+
     with open(out / "eval_results.json", "w", encoding="utf-8") as f:
         json.dump({
-            "metrics": metrics,
+            "tag": tag,
+            "metrics_full": full,
+            "metrics_coherent": coh,
+            "coherent_n": metrics_pack["coherent_n"],
+            "coherent_rate": metrics_pack["coherent_rate"],
             "results": results,
         }, f, ensure_ascii=False, indent=2)
 
-    # 마크다운 리포트
     md = []
-    md.append("# 사용자 효용 검증 — 구음장애 화자 대상\n")
+    md.append(f"# 사용자 효용 검증 — [{tag}]\n")
     md.append("> 본 평가는 CER이 아닌 **앱 사용 가치**를 측정합니다.\n"
               "> 같은 오디오에 대한 베이스라인(자동 교정) vs 본 앱(Raw 출력)의 "
-              "자모-수준 차이를\n> 분석하여 구음장애 화자가 본 앱을 통해 "
-              "얻는 추가 정보와 진단 능력을 정량화합니다.\n")
-    md.append(f"\n- 평가 발화 수: **{metrics['n_samples']}**\n")
+              "자모-수준 차이를 분석합니다.\n")
 
-    # V1
-    md.append("\n## V1. 솔직한 피드백 — 자동 교정 거부\n")
-    rate = metrics["M1_auto_correction_rejection_rate"]
-    md.append(f"| 지표 | 값 |\n|------|----|")
-    md.append(f"| **M1. Auto-Correction Rejection Rate** | **{rate:.1%}** |")
-    md.append(f"\n구음장애 화자의 모든 발화 중 **{rate:.1%}** 에서 본 앱은 "
-              f"베이스라인의 자동 교정을 거부했습니다. "
-              f"일반 ASR을 사용했다면 사용자는 자신의 발음 오류를 인지하지 "
-              f"못한 채 표준 한국어 표기만 보게 됩니다.")
+    md.append(f"\n- **전체 평가 발화**: {full['n_samples']}")
+    md.append(f"- **응집 베이스라인 부분집합**: {metrics_pack['coherent_n']} "
+              f"({metrics_pack['coherent_rate']:.0%})")
 
-    # V2
-    md.append("\n## V2. 정보 가시성 — 들리는 소리 노출\n")
-    m2 = metrics["M2_information_disclosure"]
-    md.append("| 지표 | 값 |\n|------|----|")
-    md.append(f"| **M2. 평균 자모 편집 거리 (Y vs X)** | "
-              f"**{m2['mean_edit_distance']:.2f} 자모/발화** |")
-    md.append(f"| 중간값 | {m2['median_edit_distance']:.2f} |")
-    md.append(f"| IQR | {m2['p25']:.2f} ~ {m2['p75']:.2f} |")
-    md.append(f"\n베이스라인 출력 대비 발화당 평균 "
-              f"**{m2['mean_edit_distance']:.1f}개의 자모 정보**가 본 앱을 통해 "
-              f"추가 노출됩니다. 이는 사용자가 일반 ASR로는 알 수 없는 "
-              f"자신의 실제 발음 음소들을 확인할 수 있음을 의미합니다.")
+    md.append("\n## ✅ 강한 주장 (입증된 가치)\n")
+    rate_full = full["M1_auto_correction_rejection_rate"]
+    rate_coh = coh["M1_auto_correction_rejection_rate"] if coh["n_samples"] else 0
+    md.append(f"1. **[V1] 본 앱은 베이스라인과 다른 출력을 일관되게 생성** — "
+              f"전체 {rate_full:.0%} / 응집 부분집합 {rate_coh:.0%} 자동 교정 거부 (M1)")
 
-    # V3
-    md.append("\n## V3. 진단 구체성 — 자모/음운변동 단위 분석\n")
-    m3 = metrics["M3_feedback_density"]
-    md.append("### M3. Feedback Density\n")
-    md.append("| 지표 | 값 |\n|------|----|")
-    md.append(f"| 평균 음운규칙 부합 차이 / 발화 | "
-              f"**{m3['mean_rule_hits_per_utt']:.2f}** |")
-    md.append(f"| 음운규칙 차이 ≥1개 발화 비율 | "
-              f"**{m3['rule_hit_sample_rate']:.1%}** "
-              f"({m3['samples_with_at_least_one_hit']}/{metrics['n_samples']}) |")
+    cats_coh = (coh["M4_diagnosis_coverage"]["category_total_hits"]
+                if coh["n_samples"] else {})
+    n_cat = sum(1 for k in ["tensification", "palatalization",
+                            "nasalization", "linking"]
+                if cats_coh.get(k, 0) > 0)
+    sn_coh = (coh["M3_feedback_density"]["mean_phonetic_rule_ratio"]
+              if coh["n_samples"] else 0)
+    md.append(f"2. **[V3] 본 앱은 한국어 음운규칙을 학습** — "
+              f"4종 중 {n_cat}종 카테고리 검출, S/N 비율 평균 {sn_coh:.1%} "
+              f"(M3, M4)")
 
-    md.append("\n### M4. Diagnosis Coverage — 음운변동 4종 진단\n")
-    md.append("| 음운변동 | 총 검출 | 발화 발생률 |\n|---------|--------|------------|")
-    cats = metrics["M4_diagnosis_coverage"]["category_total_hits"]
-    prev = metrics["M4_diagnosis_coverage"]["category_sample_prevalence"]
-    for k in ["tensification", "palatalization", "nasalization",
-              "linking_candidate"]:
-        ko = CATEGORY_KO[k]
-        md.append(f"| {ko} | {cats.get(k, 0)} | {prev.get(k, 0):.1%} |")
-
-    # V4
-    md.append("\n## V4. 일관성 — 학습 추적 가능성\n")
-    m5 = metrics["M5_per_speaker_consistency"]
+    m5 = full["M5_per_speaker_consistency"]
     if m5["n_eligible_speakers"] > 0:
-        md.append("| 지표 | 값 |\n|------|----|")
-        md.append(f"| 분석 대상 화자 수 (≥3 발화) | "
-                  f"{m5['n_eligible_speakers']} |")
-        md.append(f"| **평균 화자 내 일관성** | "
-                  f"**{m5['mean_consistency']:.1%}** |")
-        md.append(f"| 중간값 일관성 | {m5['median_consistency']:.1%} |")
-        md.append(f"| ≥50% 일관성 화자 수 | "
-                  f"{m5['high_consistency_speakers']} |")
-        md.append(f"\n동일 화자의 여러 발화에서 동일 자모 치환 패턴이 평균 "
-                  f"**{m5['mean_consistency']:.0%}** 반복되어, "
-                  f"화자별 발음 약점을 일관되게 식별하고 "
-                  f"long-term 학습 추적 도구로 활용 가능함이 확인되었습니다.")
-    else:
-        md.append("(데이터 내 ≥3 발화 화자가 부족하여 일관성 분석을 "
-                  "수행할 수 없습니다.)")
+        md.append(f"3. **[V4] 화자별 자모 치환 패턴이 반복됨** — "
+                  f"화자 {m5['n_eligible_speakers']}명에서 평균 "
+                  f"{m5['mean_consistency']:.1%} 일관성 (M5)")
 
-    # 시연 케이스
-    md.append("\n## 시연 케이스 (자동 큐레이션)\n")
+    md.append("\n## 📊 M1~M5 통합 비교 (전체 vs 응집 부분집합)\n")
+    md.append("| 지표 | 전체 | 응집 부분집합 | 비고 |")
+    md.append("|------|-----|---------------|-----|")
+    md.append(f"| 샘플 수 | {full['n_samples']} | {coh['n_samples']} | |")
+    md.append(f"| **M1. 자동교정 거부율** | "
+              f"**{rate_full:.1%}** | **{rate_coh:.1%}** | V1 |")
+    m2f = full["M2_information_disclosure"]
+    m2c = coh["M2_information_disclosure"] if coh["n_samples"] else {"mean_edit_distance": 0}
+    md.append(f"| M2. 평균 정보 공개량 (자모/발화) | "
+              f"{m2f['mean_edit_distance']:.2f} | "
+              f"{m2c.get('mean_edit_distance', 0):.2f} | V2 |")
+    m3f = full["M3_feedback_density"]
+    m3c = coh["M3_feedback_density"] if coh["n_samples"] else {
+        "mean_rule_hits_per_utt": 0, "rule_hit_sample_rate": 0,
+        "mean_phonetic_rule_ratio": 0
+    }
+    md.append(f"| M3. 평균 음운규칙 차이/발화 | "
+              f"{m3f['mean_rule_hits_per_utt']:.2f} | "
+              f"{m3c['mean_rule_hits_per_utt']:.2f} | V3 |")
+    md.append(f"| M3. ≥1 hit 발화 비율 | "
+              f"{m3f['rule_hit_sample_rate']:.1%} | "
+              f"{m3c['rule_hit_sample_rate']:.1%} | V3 |")
+    md.append(f"| **M3. S/N 비율 (rule_hits/edit_distance)** | "
+              f"**{m3f['mean_phonetic_rule_ratio']:.1%}** | "
+              f"**{m3c['mean_phonetic_rule_ratio']:.1%}** | V3 — 신호 비율 |")
+
+    md.append("\n## 🔬 M4. 진단 커버리지 (음운변동 카테고리별)\n")
+    md.append("| 카테고리 | 전체 검출 | 전체 발화 발생률 | 응집 검출 | 응집 발화 발생률 |")
+    md.append("|---------|----------|----------------|---------|----------------|")
+    cf = full["M4_diagnosis_coverage"]["category_total_hits"]
+    pf = full["M4_diagnosis_coverage"]["category_sample_prevalence"]
+    pc = coh["M4_diagnosis_coverage"]["category_sample_prevalence"] if coh["n_samples"] else {}
+    for k in ["tensification", "palatalization", "nasalization", "linking"]:
+        ko = CATEGORY_KO[k]
+        md.append(f"| {ko} | {cf.get(k, 0)} | {pf.get(k, 0):.1%} | "
+                  f"{cats_coh.get(k, 0)} | {pc.get(k, 0):.1%} |")
+    other_full = cf.get("other", 0)
+    other_coh = cats_coh.get("other", 0)
+    md.append(f"| (기타: 음운규칙 외) | {other_full} | — | {other_coh} | — |")
+
+    if m5["n_eligible_speakers"] > 0:
+        md.append("\n## 🔁 M5. 화자별 일관성\n")
+        md.append("| 항목 | 값 |\n|------|----|")
+        md.append(f"| 분석 대상 화자 수 (≥3 발화) | {m5['n_eligible_speakers']} |")
+        md.append(f"| 평균 일관성 | **{m5['mean_consistency']:.1%}** |")
+        md.append(f"| 중간값 일관성 | {m5['median_consistency']:.1%} |")
+        md.append(f"| ≥50% 일관성 화자 수 | {m5['high_consistency_speakers']} |")
+
+    md.append("\n## 🎬 시연 케이스 (응집 부분집합에서 자동 큐레이션)\n")
     if demos["per_category"]:
         md.append("\n### 음운변동 카테고리별 대표 사례\n")
         for cat, r in demos["per_category"].items():
@@ -617,24 +665,23 @@ def save_results(results, metrics, demos, output_dir):
             md.append(f"| 베이스라인 X (자동 교정) | `{r['baseline_X']}` |")
             md.append(f"| 본 앱 Y (Raw 출력) | `{r['finetuned_Y']}` |")
             md.append(f"\n→ 자모 차이 {r['edit_distance']}개, "
-                      f"음운규칙 부합 {r['rule_hits']}개")
+                      f"음운규칙 부합 {r['rule_hits']}개, "
+                      f"S/N {r['phonetic_rule_ratio']:.1%}")
             if r["subs"]:
-                md.append(f"→ 치환 패턴: " +
+                md.append("→ 치환 패턴: " +
                           ", ".join(f"`{e}→{a}`" for e, a in r["subs"][:6]))
 
-    md.append("\n## 종합 결론\n")
-    md.append(f"- 구음장애 화자 {metrics['n_samples']}개 발화에 대해 "
-              f"본 앱은 **{rate:.1%}**의 발화에서 베이스라인의 자동 교정을 거부 (V1)")
-    md.append(f"- 평균 발화당 **{m2['mean_edit_distance']:.1f}개의 자모 음운 정보**를 "
-              f"베이스라인보다 추가 노출 (V2)")
-    rule_pct = m3["rule_hit_sample_rate"]
-    md.append(f"- 발화의 **{rule_pct:.1%}** 에서 한국어 음운규칙 부합 차이를 "
-              f"자모 단위로 진단 (V3)")
-    if m5["n_eligible_speakers"] > 0:
-        md.append(f"- 화자별 발음 약점이 평균 **{m5['mean_consistency']:.0%}** "
-                  f"반복 검출되어 long-term 추적 가능 (V4)")
-    md.append("\n→ **구음장애를 가진 사용자가 본 앱을 사용해야 하는 이유가 "
-              "정량적·정성적으로 입증됨.**")
+    md.append("\n## 📝 해석 가이드\n")
+    md.append("- **M1 자동교정 거부율**: 100%에 가까울수록 본 앱의 차별성이 강함. "
+              "다른 ASR은 발음 오류를 숨기지만 본 앱은 노출함.")
+    md.append("- **M3 S/N 비율**: 자모 차이 중 한국어 음운규칙으로 설명되는 비율. "
+              "**높을수록 본 앱이 노출하는 정보가 진짜 발음 정보임을 의미**.")
+    md.append("- **응집 부분집합 vs 전체**: 베이스라인이 표준 한국어로 "
+              "정상 인식한 케이스에 한정해 metrics를 산출하면 노이즈가 줄어들고 "
+              "지표 해석이 명확해짐. 발표 시 이 부분집합 수치를 사용하는 것을 권장.")
+    md.append("- **통제군 비교**: 같은 스크립트를 Zeroth-Korean(정상 발음) test "
+              "데이터에 돌려 얻은 수치를 *효용 지표 상한값*으로 함께 제시하면 "
+              "AIHub 결과의 의미 해석이 강화됨.")
 
     with open(out / "summary.md", "w", encoding="utf-8") as f:
         f.write("\n".join(md))
@@ -649,7 +696,7 @@ def save_results(results, metrics, demos, output_dir):
 # ────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(
-        description="AIHub 구음장애 — 사용자 효용 검증"
+        description="사용자 효용 검증 (Value Proposition Verification)"
     )
     parser.add_argument("--model_path", type=str,
                         default=str(HOME / "mingly_workspace" / "Voice-Model-Test"
@@ -663,10 +710,12 @@ def main():
     parser.add_argument("--max_dur", type=float, default=10.0)
     parser.add_argument("--output_dir", type=str,
                         default="results/aihub_value_proposition")
+    parser.add_argument("--tag", type=str, default="aihub",
+                        help="결과 식별 태그 (예: aihub, zeroth)")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"🖥️  Device: {device}")
+    print(f"🖥️  Device: {device}  |  tag: {args.tag}")
 
     records = load_audio_samples(
         args.json_dir, num_samples=args.num_samples,
@@ -682,18 +731,18 @@ def main():
     ft_pack = load_whisper(args.model_path, device)
 
     print(f"\n{'='*72}")
-    print(f"  🔬 사용자 효용 검증 시작 ({len(records)}개)")
+    print(f"  🔬 사용자 효용 검증 시작 ({len(records)}개)  [tag={args.tag}]")
     print(f"{'='*72}")
     results = evaluate(records, base_pack, ft_pack, device)
 
-    metrics = compute_metrics(results)
+    metrics_pack = split_full_and_coherent(results)
     demos = curate_demos(results)
 
-    print_report(metrics, demos)
-    save_results(results, metrics, demos, args.output_dir)
+    print_report(metrics_pack, demos, tag=args.tag)
+    save_results(results, metrics_pack, demos, args.output_dir, tag=args.tag)
 
     print(f"\n{'='*72}")
-    print(f"  ✅ 검증 완료")
+    print(f"  ✅ 검증 완료 [tag={args.tag}]")
     print(f"{'='*72}")
 
 

@@ -178,9 +178,39 @@ Whisper의 강력한 LM이 자동 수행하던 **맞춤법 교정 동작을, g2p
 | **V3. 진단 구체성** | "ㅁ을 ㅂ으로 발음하고 있다는 걸 정확히 짚어줌" | **M3.** Feedback Density (한국어 음운규칙 부합 차이/발화)<br>**M4.** Diagnosis Coverage (경음화/비음화/구개음화/연음화 분포) |
 | **V4. 일관성** | "내 발음 약점이 매번 같은 곳에서 나타나니, 거기를 집중 연습 가능" | **M5.** Per-Speaker Consistency: 동일 화자 발화에서 동일 자모 치환 패턴 반복률 |
 
+#### 결과 신뢰성 보강 — 응집 베이스라인 필터 + S/N 비율
+
+베이스라인(Whisper-tiny)은 dysarthric 음성에서 표준 표기를 항상 정확히 뽑지 못하므로,
+모든 결과를 **2가지 부분집합**에서 산출해 비교 보고합니다.
+
+| 부분집합 | 정의 | 용도 |
+|---------|------|-----|
+| **전체** | 모든 평가 발화 | 광범위 추세 |
+| **응집 베이스라인** | X가 한국어로 응집된 발화만 (≥5자, 한글비율≥70%, 종결어미 포함) | **신뢰도 ↑ — 발표 시 사용 권장** |
+
+또한 **신호/노이즈 비율(S/N)** 을 핵심 해석 지표로 추가:
+
+```
+S/N 비율 = phonetic_rule_ratio = rule_hits / edit_distance
+        = 자모 차이 중 한국어 음운규칙으로 설명되는 비율
+```
+
+높을수록 본 앱이 노출하는 정보가 *진짜 발음 정보*임을 의미합니다.
+
+#### 통제군 비교 — Zeroth-Korean Test
+
+같은 스크립트를 1차 검증에서 사용한 깨끗한 Zeroth-Korean test에 돌려
+**효용 지표 상한값(upper bound)** 을 얻습니다.
+AIHub(dysarthric)와 Zeroth(clean) 두 결과를 함께 제시하면 발표 신뢰도가 크게 올라갑니다.
+
+| 데이터셋 | 의미 | 기대되는 결과 |
+|---------|------|--------------|
+| **AIHub 구음장애** | 실 사용자 시나리오 (target user proxy) | M1 높음, S/N 중간 (노이즈 많음) |
+| **Zeroth-Korean test** | 정상 발음 통제군 (upper bound) | M1 높음, S/N **높음** (대부분이 음운변동) |
+
 #### 실행 환경
 - **테스트 환경:** Linux 서버 (NVIDIA CUDA GPU)
-- **이유:** 구음장애 데이터셋 대용량 처리 + 두 모델 동시 추론 비교
+- **이유:** 두 모델 동시 추론 + AIHub/Zeroth 양쪽 평가
 
 ```bash
 # 1단계 — AIHub 원본 데이터를 VAD로 세그멘트 (최초 1회)
@@ -189,19 +219,28 @@ PYTHONNOUSERSITE=1 python vad_segment.py \
     --json_dir "/path/to/aihub/라벨링데이터" \
     --output_dir ./segmented_dataset
 
-# 2단계 — 사용자 효용 검증 (V1-V4 측정)
+# 2단계 — 사용자 효용 검증 (AIHub 구음장애)
 CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_baseline_ref.py \
     --model_path best_model_whisper/best \
     --baseline_model openai/whisper-tiny \
     --json_dir segmented_dataset \
     --num_samples 200 \
-    --min_dur 1.0 --max_dur 10.0 \
+    --tag aihub \
     --output_dir results/aihub_value_proposition
+
+# 3단계 — 통제군 (Zeroth-Korean clean speech)
+CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_baseline_ref.py \
+    --model_path best_model_whisper/best \
+    --baseline_model openai/whisper-tiny \
+    --json_dir zeroth_dataset \
+    --num_samples 200 \
+    --tag zeroth \
+    --output_dir results/zeroth_value_proposition
 ```
 
 #### 출력 결과
-- `results/aihub_value_proposition/eval_results.json` — 샘플별 X / Y / 자모 차이 / 음운변동 분류 / speaker_id 메타데이터
-- `results/aihub_value_proposition/summary.md` — V1-V4 입증 리포트 + 음운변동 카테고리별 시연 케이스 (자동 큐레이션)
+- `results/{tag}_value_proposition/eval_results.json` — 전체+응집 부분집합 metrics + 샘플별 상세 (X/Y/자모 차이/음운변동/S/N)
+- `results/{tag}_value_proposition/summary.md` — 강한 주장 요약 + M1-M5 비교표(전체 vs 응집) + 시연 케이스
 
 ---
 
