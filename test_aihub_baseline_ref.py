@@ -395,6 +395,114 @@ def split_full_and_coherent(results):
 
 
 # ────────────────────────────────────────────
+# 6-1. 화자별 발음 약점 프로파일
+# ────────────────────────────────────────────
+def compute_speaker_profiles(results, min_utt=3, top_n=5):
+    """화자별 발음 약점 상세 프로파일.
+
+    각 화자(≥min_utt 발화)에 대해:
+      - 자주 등장한 자모 치환 패턴 TOP N (총 횟수, 발화 발생률)
+      - 음운변동 카테고리별 분포 (경음/구개/비음/연음)
+      - 가장 약한 카테고리 (weakness)
+    """
+    by_speaker = defaultdict(list)
+    for r in results:
+        if r["speaker_id"]:
+            by_speaker[r["speaker_id"]].append(r)
+
+    profiles = []
+    for sp, items in by_speaker.items():
+        if len(items) < min_utt:
+            continue
+        n_utt = len(items)
+
+        # 자모 치환 패턴 빈도 (총 횟수 + 발화 발생률)
+        pair_total = Counter()
+        pair_utts = Counter()
+        for r in items:
+            seen_in_utt = set()
+            for s in r["subs"]:
+                pair_total[s] += 1
+                if s not in seen_in_utt:
+                    pair_utts[s] += 1
+                    seen_in_utt.add(s)
+
+        # 카테고리 분포 (총 횟수 + 발화 발생률)
+        cat_total = Counter()
+        cat_utts = Counter()
+        for r in items:
+            seen_cats = set()
+            for k, v in r["transform_cats"].items():
+                cat_total[k] += v
+                if v > 0 and k not in seen_cats:
+                    cat_utts[k] += 1
+                    seen_cats.add(k)
+
+        # 약점 카테고리 = 발화 발생률 1위
+        rule_only = {k: cat_utts.get(k, 0)
+                     for k in ["tensification", "palatalization",
+                               "nasalization", "linking"]}
+        weakness_key = (max(rule_only.items(), key=lambda x: x[1])[0]
+                        if any(rule_only.values()) else None)
+
+        profile = {
+            "speaker_id": sp,
+            "n_utterances": n_utt,
+            "weakness": (CATEGORY_KO.get(weakness_key, "없음")
+                         if weakness_key else "없음"),
+            "category_distribution": {
+                CATEGORY_KO[k]: {
+                    "total_count": cat_total.get(k, 0),
+                    "utterance_count": cat_utts.get(k, 0),
+                    "utterance_rate": round(cat_utts.get(k, 0) / n_utt, 4),
+                }
+                for k in ["tensification", "palatalization",
+                          "nasalization", "linking"]
+            },
+            "top_substitution_patterns": [
+                {
+                    "pattern": f"{e}→{a}",
+                    "total_count": pair_total[(e, a)],
+                    "utterance_count": pair_utts[(e, a)],
+                    "utterance_rate": round(pair_utts[(e, a)] / n_utt, 4),
+                }
+                for (e, a), _ in pair_total.most_common(top_n)
+            ],
+        }
+        profiles.append(profile)
+
+    profiles.sort(key=lambda p: -p["n_utterances"])
+    return profiles
+
+
+def print_speaker_profiles(profiles, max_show=0):
+    """화자 프로파일 콘솔 출력. max_show=0 이면 전체 출력."""
+    if not profiles:
+        return
+    print(f"\n{'═'*72}")
+    print(f"  👤 화자별 발음 약점 프로파일 (≥3 발화 화자, {len(profiles)}명)")
+    print(f"{'═'*72}")
+    print(f"  ※ 각 화자가 어떤 음운변동에 자주 어긋나는지 자모 단위로 보여줍니다.")
+    show_list = profiles if max_show == 0 else profiles[:max_show]
+    for p in show_list:
+        print(f"\n  ━ {p['speaker_id']}  ({p['n_utterances']} 발화)")
+        print(f"    🎯 주요 약점 카테고리: {p['weakness']}")
+        print(f"    📊 음운변동 카테고리 분포:")
+        for cat, info in p["category_distribution"].items():
+            if info["utterance_count"] > 0:
+                print(f"        {cat}: {info['utterance_count']}/"
+                      f"{p['n_utterances']} 발화 "
+                      f"({info['utterance_rate']:.0%})  "
+                      f"총 {info['total_count']}회")
+        print(f"    🔤 자주 등장 자모 치환 TOP 5:")
+        for i, pat in enumerate(p["top_substitution_patterns"], 1):
+            print(f"        {i}. {pat['pattern']}  "
+                  f"{pat['utterance_count']}/{p['n_utterances']} 발화 "
+                  f"({pat['utterance_rate']:.0%})  "
+                  f"총 {pat['total_count']}회")
+
+
+# ────────────────────────────────────────────
 # 7. 시연 케이스 큐레이션
 # ────────────────────────────────────────────
 def curate_demos(results, top_n=5):
@@ -557,7 +665,8 @@ def print_report(metrics_pack, demos, tag):
 # ────────────────────────────────────────────
 # 9. 결과 저장
 # ────────────────────────────────────────────
-def save_results(results, metrics_pack, demos, output_dir, tag):
+def save_results(results, metrics_pack, demos, output_dir, tag,
+                 speaker_profiles=None):
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -571,6 +680,7 @@ def save_results(results, metrics_pack, demos, output_dir, tag):
             "metrics_coherent": coh,
             "coherent_n": metrics_pack["coherent_n"],
             "coherent_rate": metrics_pack["coherent_rate"],
+            "speaker_profiles": speaker_profiles or [],
             "results": results,
         }, f, ensure_ascii=False, indent=2)
 
@@ -655,6 +765,30 @@ def save_results(results, metrics_pack, demos, output_dir, tag):
         md.append(f"| 중간값 일관성 | {m5['median_consistency']:.1%} |")
         md.append(f"| ≥50% 일관성 화자 수 | {m5['high_consistency_speakers']} |")
 
+    if speaker_profiles:
+        md.append("\n## 👤 화자별 발음 약점 프로파일\n")
+        md.append(f"≥3 발화 화자 {len(speaker_profiles)}명에 대한 "
+                  f"자모/카테고리별 약점 상세.\n")
+        for p in speaker_profiles:
+            md.append(f"\n### {p['speaker_id']}  ({p['n_utterances']} 발화)\n")
+            md.append(f"- **주요 약점 카테고리**: {p['weakness']}\n")
+            md.append("\n**음운변동 카테고리 분포**\n")
+            md.append("| 카테고리 | 발화 수 | 발화 발생률 | 총 횟수 |")
+            md.append("|---------|--------|------------|--------|")
+            for cat, info in p["category_distribution"].items():
+                md.append(f"| {cat} | {info['utterance_count']}/"
+                          f"{p['n_utterances']} | "
+                          f"{info['utterance_rate']:.0%} | "
+                          f"{info['total_count']} |")
+            md.append("\n**자주 등장 자모 치환 TOP 5**\n")
+            md.append("| 순위 | 패턴 | 발화 수 | 발화 발생률 | 총 횟수 |")
+            md.append("|------|-----|--------|------------|--------|")
+            for i, pat in enumerate(p["top_substitution_patterns"], 1):
+                md.append(f"| {i} | `{pat['pattern']}` | "
+                          f"{pat['utterance_count']}/{p['n_utterances']} | "
+                          f"{pat['utterance_rate']:.0%} | "
+                          f"{pat['total_count']} |")
+
     md.append("\n## 🎬 시연 케이스 (응집 부분집합에서 자동 큐레이션)\n")
     if demos["per_category"]:
         md.append("\n### 음운변동 카테고리별 대표 사례\n")
@@ -705,13 +839,16 @@ def main():
     parser.add_argument("--json_dir", type=str,
                         default=str(HOME / "mingly_workspace" / "Voice-Model-Test"
                                     / "segmented_dataset"))
-    parser.add_argument("--num_samples", type=int, default=200)
+    parser.add_argument("--num_samples", type=int, default=200,
+                        help="평가 샘플 수. 0=duration 필터 통과한 전체")
     parser.add_argument("--min_dur", type=float, default=1.0)
     parser.add_argument("--max_dur", type=float, default=10.0)
     parser.add_argument("--output_dir", type=str,
                         default="results/aihub_value_proposition")
     parser.add_argument("--tag", type=str, default="aihub",
                         help="결과 식별 태그 (예: aihub, zeroth)")
+    parser.add_argument("--max_speakers_print", type=int, default=0,
+                        help="콘솔에 출력할 화자 프로파일 수. 0=전체")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -737,9 +874,12 @@ def main():
 
     metrics_pack = split_full_and_coherent(results)
     demos = curate_demos(results)
+    speaker_profiles = compute_speaker_profiles(results)
 
     print_report(metrics_pack, demos, tag=args.tag)
-    save_results(results, metrics_pack, demos, args.output_dir, tag=args.tag)
+    print_speaker_profiles(speaker_profiles, max_show=args.max_speakers_print)
+    save_results(results, metrics_pack, demos, args.output_dir, tag=args.tag,
+                 speaker_profiles=speaker_profiles)
 
     print(f"\n{'='*72}")
     print(f"  ✅ 검증 완료 [tag={args.tag}]")
