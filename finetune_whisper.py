@@ -297,6 +297,7 @@ def train(
     max_samples=0,
     apply_g2p=False,
     dry_run=False,
+    use_augment=True,
 ):
     # Lazy imports (PEFT 버전 충돌 방지)
     from transformers import (
@@ -343,12 +344,16 @@ def train(
 
     # ── 3. Dataset 생성 ──
     # train 에만 원거리/소음 증강 적용. val/test 는 clean 으로 일반화 측정.
-    from augment import FarFieldAugmentor
-    augmentor = FarFieldAugmentor(
-        noise_root=os.environ.get("MUSAN_NOISE_DIR", "/data/musan/noise"),
-        rir_root=os.environ.get("RIR_DIR", "/data/RIRS_NOISES/simulated_rirs"),
-        snr_db_range=(5.0, 20.0),
-    )
+    augmentor = None
+    if use_augment:
+        from augment import FarFieldAugmentor
+        augmentor = FarFieldAugmentor(
+            noise_root=os.environ.get("MUSAN_NOISE_DIR", "/data/musan/noise"),
+            rir_root=os.environ.get("RIR_DIR", "/data/RIRS_NOISES/simulated_rirs"),
+            snr_db_range=(5.0, 20.0),
+        )
+    else:
+        print("⚠️ 증강 비활성화 (--no_augment) — clean 학습")
     train_ds = WhisperPhoneticDataset(splits["train"], processor, augmentor=augmentor)
     val_records = splits.get("validation", splits["train"][:500])[:500]
     val_ds = WhisperPhoneticDataset(val_records, processor, augmentor=None)
@@ -467,6 +472,8 @@ if __name__ == "__main__":
                         help="transcript에서 G2P 재적용 (label 대신)")
     parser.add_argument("--dry_run", action="store_true",
                         help="데이터 검증만 수행")
+    parser.add_argument("--no_augment", action="store_true",
+                        help="원거리/소음 증강 비활성화 (clean 베이스라인 진단용)")
     args = parser.parse_args()
 
     train(
@@ -479,4 +486,5 @@ if __name__ == "__main__":
         max_samples=args.max_samples,
         apply_g2p=args.apply_g2p,
         dry_run=args.dry_run,
+        use_augment=not args.no_augment,
     )
