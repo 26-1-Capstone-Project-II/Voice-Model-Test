@@ -44,7 +44,7 @@ torch.backends.cudnn.enabled = False
 # ────────────────────────────────────────────
 # 1. 설정
 # ────────────────────────────────────────────
-BASE_MODEL   = "openai/whisper-tiny"
+BASE_MODEL   = "openai/whisper-base"   # tiny → base (≈74M, tiny의 2배)
 TARGET_SR    = 16000
 MAX_SEC      = 25.0    # 구음장애 환자 발화 속도 반영
 MIN_SEC      = 0.5     # 노이즈 세그멘트 제외
@@ -175,9 +175,10 @@ def load_data(json_dir, max_samples=0, apply_g2p=False):
 class WhisperPhoneticDataset(torch.utils.data.Dataset):
     """Whisper 입력용 Dataset: 오디오 → mel spectrogram, 라벨 → token IDs."""
 
-    def __init__(self, records, processor):
+    def __init__(self, records, processor, augmentor=None):
         self.records = records
         self.processor = processor
+        self.augmentor = augmentor          # train split 에서만 전달 (val/test=None)
 
     def __len__(self):
         return len(self.records)
@@ -196,6 +197,10 @@ class WhisperPhoneticDataset(torch.utils.data.Dataset):
         max_samples = 30 * TARGET_SR
         if len(audio) > max_samples:
             audio = audio[:max_samples]
+
+        # 원거리/소음 증강 (feature extractor 이전, 파형 도메인 / train 전용)
+        if self.augmentor is not None:
+            audio = self.augmentor(audio)
 
         # Log-mel spectrogram (Whisper feature extractor)
         input_features = self.processor.feature_extractor(
@@ -337,9 +342,16 @@ def train(
         return
 
     # ── 3. Dataset 생성 ──
-    train_ds = WhisperPhoneticDataset(splits["train"], processor)
+    # train 에만 원거리/소음 증강 적용. val/test 는 clean 으로 일반화 측정.
+    from augment import FarFieldAugmentor
+    augmentor = FarFieldAugmentor(
+        noise_root=os.environ.get("MUSAN_NOISE_DIR", "/data/musan/noise"),
+        rir_root=os.environ.get("RIR_DIR", "/data/RIRS_NOISES/simulated_rirs"),
+        snr_db_range=(5.0, 20.0),
+    )
+    train_ds = WhisperPhoneticDataset(splits["train"], processor, augmentor=augmentor)
     val_records = splits.get("validation", splits["train"][:500])[:500]
-    val_ds = WhisperPhoneticDataset(val_records, processor)
+    val_ds = WhisperPhoneticDataset(val_records, processor, augmentor=None)
 
     # ── 4. 모델 로드 ──
     print(f"\n📥 모델 로드: {BASE_MODEL}")
@@ -358,6 +370,13 @@ def train(
     # 반복 생성 방지 ("시퍼서 시퍼서 시퍼서..." 문제 해결)
     model.generation_config.no_repeat_ngram_size = 3
     model.generation_config.repetition_penalty = 1.2
+
+    # SpecAugment (학습 시에만 적용, eval 영향 없음) — 소음 증강과 함께 robustness 강화
+    model.config.apply_spec_augment   = True
+    model.config.mask_time_prob       = 0.05   # 시간축 마스크
+    model.config.mask_time_length     = 10
+    model.config.mask_feature_prob    = 0.05   # 주파수축 마스크
+    model.config.mask_feature_length  = 10
 
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -392,7 +411,7 @@ def train(
         greater_is_better=False,
         save_total_limit=2,
         report_to="none",
-        dataloader_num_workers=2,
+        dataloader_num_workers=6,           # 증강이 CPU 부하를 더함 → 워커 증가
     )
 
     # ── 6. Trainer ──
@@ -409,7 +428,7 @@ def train(
         data_collator=data_collator,
         compute_metrics=make_compute_metrics(processor),
         processing_class=processor.feature_extractor,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=8)],
     )
 
     # ── 7. 학습 시작 ──
@@ -439,7 +458,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default=str(DEFAULT_OUTPUT_DIR),
                         help="모델 저장 경로")
     parser.add_argument("--lr", type=float, default=2e-5)
-    parser.add_argument("--num_epochs", type=int, default=5)
+    parser.add_argument("--num_epochs", type=int, default=8)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--grad_accum", type=int, default=2)
     parser.add_argument("--max_samples", type=int, default=0,
