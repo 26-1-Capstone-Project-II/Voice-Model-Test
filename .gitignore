@@ -27,3 +27,4 @@ segmented_test*/
 # 환경
 .env
 venv/
+wkt/
