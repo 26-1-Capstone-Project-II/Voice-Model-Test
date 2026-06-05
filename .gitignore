@@ -28,3 +28,4 @@ segmented_test*/
 .env
 venv/
 wkt/
+coreml_out/
