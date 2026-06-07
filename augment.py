@@ -49,7 +49,7 @@ def _match_length(noise, length):
 
 
 class FarFieldAugmentor:
-    """clean → (reverb) → (+noise@SNR) → (gain). train split 에서만 사용."""
+    """clean → (reverb) → (+noise@SNR) → (gain) → (+비음성 꼬리). train split 에서만 사용."""
 
     def __init__(
         self,
@@ -62,6 +62,10 @@ class FarFieldAugmentor:
         hard_snr_db_range=(0.0, 5.0),
         p_hard_snr=0.1,
         gain_db_range=(-6.0, 6.0),
+        p_tail=0.3,
+        tail_sec_range=(2.0, 10.0),
+        tail_snr_db_range=(5.0, 15.0),
+        max_total_sec=30.0,
         seed=None,
     ):
         self.noise_files = _load_wav_list(noise_root)
@@ -73,10 +77,16 @@ class FarFieldAugmentor:
         self.hard_snr_db_range = hard_snr_db_range
         self.p_hard_snr = p_hard_snr
         self.gain_db_range = gain_db_range
+        # 비음성 꼬리: 음성 종료 후 윈도우 잔여 구간을 노이즈/무음으로 채운다.
+        # 라벨은 음성 부분만 유지 → 모델이 "비음성 = 출력 없음(EOS)"을 학습 → 후반부 환각 억제.
+        self.p_tail = p_tail
+        self.tail_sec_range = tail_sec_range
+        self.tail_snr_db_range = tail_snr_db_range
+        self.max_total_sec = max_total_sec
         if seed is not None:
             random.seed(seed)
         print(f"[Augmentor] noise={len(self.noise_files)} rir={len(self.rir_files)} "
-              f"p_reverb={self.p_reverb} p_noise={self.p_noise}")
+              f"p_reverb={self.p_reverb} p_noise={self.p_noise} p_tail={self.p_tail}")
 
     def _reverberate(self, audio):
         rir = _load_audio(random.choice(self.rir_files))
@@ -102,6 +112,25 @@ class FarFieldAugmentor:
         gain_db = random.uniform(*self.gain_db_range)
         return (audio * (10 ** (gain_db / 20))).astype(np.float32)
 
+    def _append_tail(self, audio):
+        """음성 뒤에 비음성(노이즈 또는 무음) 꼬리를 붙인다. 라벨은 그대로(음성 부분만)."""
+        sr = TARGET_SR
+        room = int(self.max_total_sec * sr) - len(audio)
+        if room <= int(0.5 * sr):             # 이미 윈도우가 거의 찼으면 생략
+            return audio
+        tail_sec = random.uniform(*self.tail_sec_range)
+        tail_len = min(int(tail_sec * sr), room)
+        if self.noise_files and random.random() < 0.8:
+            noise = _match_length(_load_audio(random.choice(self.noise_files)), tail_len)
+            snr = random.uniform(*self.tail_snr_db_range)
+            clean_p = float(np.mean(audio ** 2)) + 1e-8
+            noise_p = float(np.mean(noise ** 2)) + 1e-8
+            scale = np.sqrt(clean_p / (10 ** (snr / 10)) / noise_p)
+            tail = (scale * noise).astype(np.float32)
+        else:
+            tail = np.zeros(tail_len, dtype=np.float32)   # 일부는 순수 무음 꼬리
+        return np.concatenate([audio, tail]).astype(np.float32)
+
     def __call__(self, audio):
         if self.p_reverb and random.random() < self.p_reverb:
             audio = self._reverberate(audio)
@@ -109,6 +138,9 @@ class FarFieldAugmentor:
             audio = self._add_noise(audio)
         if random.random() < self.p_gain:
             audio = self._apply_gain(audio)
+        # 비음성 꼬리는 (잔향·소음 적용 후) 마지막에 붙인다.
+        if self.p_tail and random.random() < self.p_tail:
+            audio = self._append_tail(audio)
         peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
         if peak > 0.99:                       # 클리핑 방지
             audio = audio * (0.99 / peak)
