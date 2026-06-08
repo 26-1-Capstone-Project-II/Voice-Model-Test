@@ -86,7 +86,7 @@ else
 fi
 eval $PY finetune_whisper.py \
     --json_dir "$DATA_DIR" --apply_g2p \
-    --p_tail 0.3 --longform_prob 0.3 \
+    --p_tail 0.3 --longform_prob 0.3 --noise_only_prob "${NOISE_ONLY_PROB:-0.05}" \
     --batch_size 8 --grad_accum 2 \
     --output_dir "$OUT_DIR" $INIT_ARG $TRAIN_ARGS
 

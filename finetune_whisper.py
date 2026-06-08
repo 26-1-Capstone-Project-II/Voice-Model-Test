@@ -181,13 +181,17 @@ class WhisperPhoneticDataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, records, processor, augmentor=None,
-                 longform_prob=0.0, longform_max_sec=28.0, longform_max_chars=180):
+                 longform_prob=0.0, longform_max_sec=28.0, longform_max_chars=180,
+                 noise_only_prob=0.0):
         self.records = records
         self.processor = processor
         self.augmentor = augmentor          # train split 에서만 전달 (val/test=None)
         self.longform_prob = longform_prob
         self.longform_max_sec = longform_max_sec
         self.longform_max_chars = longform_max_chars
+        # 순수 비음성(노이즈/무음) → 빈 라벨 비율. "비음성 = 출력 없음(EOS)" 학습으로
+        # noise-only 환각을 근본 억제. 과하면 실제 발화를 조기 EOS 할 수 있어 낮게 유지.
+        self.noise_only_prob = noise_only_prob
 
     def __len__(self):
         return len(self.records)
@@ -198,6 +202,21 @@ class WhisperPhoneticDataset(torch.utils.data.Dataset):
         except Exception:
             audio = np.zeros(TARGET_SR, dtype=np.float32)   # 로드 실패 시 1초 무음
         return audio.astype(np.float32)
+
+    def _make_noise_only(self):
+        """순수 비음성 클립 생성 (노이즈/무음, 라벨 없음). 노이즈 파일 없으면 None."""
+        import random
+        if not (self.augmentor is not None and self.augmentor.noise_files):
+            return None
+        from augment import _load_audio, _match_length
+        sec = random.uniform(3.0, 20.0)
+        length = int(sec * TARGET_SR)
+        noise = _match_length(_load_audio(random.choice(self.augmentor.noise_files)), length)
+        peak = float(np.max(np.abs(noise))) + 1e-8
+        noise = (random.uniform(0.05, 0.5) * noise / peak).astype(np.float32)  # 레벨 다양화
+        if self.augmentor.rir_files and random.random() < 0.3:
+            noise = self.augmentor._reverberate(noise)               # 잔향 섞인 비음성도
+        return noise
 
     def _build_longform(self, idx):
         """idx 부터 연속 발화를 이어붙여 (audio, label) 생성. 발화 사이 짧은 무음 삽입."""
@@ -225,11 +244,17 @@ class WhisperPhoneticDataset(torch.utils.data.Dataset):
         import random
         rec = self.records[idx]
 
-        # long-form 결합 (train 전용) 또는 단일 발화
-        if self.longform_prob > 0 and random.random() < self.longform_prob:
-            audio, label = self._build_longform(idx)
+        # 순수 비음성 → 빈 라벨 (train 전용). augmentor 가 추가 열화하지 않도록 별도 분기.
+        noise_only = None
+        if self.noise_only_prob > 0 and random.random() < self.noise_only_prob:
+            noise_only = self._make_noise_only()
+
+        if noise_only is not None:
+            audio, label = noise_only, ""
+        elif self.longform_prob > 0 and random.random() < self.longform_prob:
+            audio, label = self._build_longform(idx)      # long-form 결합
         else:
-            audio, label = self._load(rec), rec["label"]
+            audio, label = self._load(rec), rec["label"]  # 단일 발화
 
         # 30초 이하로 자르기 (Whisper 윈도우)
         max_samples = 30 * TARGET_SR
@@ -237,7 +262,8 @@ class WhisperPhoneticDataset(torch.utils.data.Dataset):
             audio = audio[:max_samples]
 
         # 원거리/소음 증강 (feature extractor 이전, 파형 도메인 / train 전용)
-        if self.augmentor is not None:
+        # 비음성 클립은 이미 노이즈이므로 추가 증강을 건너뛴다.
+        if self.augmentor is not None and noise_only is None:
             audio = self.augmentor(audio)
 
         # Log-mel spectrogram (Whisper feature extractor)
@@ -339,6 +365,7 @@ def train(
     p_tail=0.3,
     longform_prob=0.3,
     longform_max_sec=28.0,
+    noise_only_prob=0.05,
     repetition_penalty=1.0,
     no_repeat_ngram_size=0,
     init_model=None,
@@ -408,6 +435,7 @@ def train(
     train_ds = WhisperPhoneticDataset(
         splits["train"], processor, augmentor=augmentor,
         longform_prob=longform_prob, longform_max_sec=longform_max_sec,
+        noise_only_prob=noise_only_prob,
     )
     val_records = splits.get("validation", splits["train"][:500])[:500]
     val_ds = WhisperPhoneticDataset(val_records, processor, augmentor=None)
@@ -539,6 +567,8 @@ if __name__ == "__main__":
                         help="여러 발화 이어붙인 long-form 샘플 비율 (>30초 후반부 커버)")
     parser.add_argument("--longform_max_sec", type=float, default=28.0,
                         help="long-form 목표 최대 길이(초)")
+    parser.add_argument("--noise_only_prob", type=float, default=0.05,
+                        help="순수 비음성→빈 라벨 샘플 비율 (noise-only 환각 억제). 과하면 조기 EOS 위험")
     parser.add_argument("--repetition_penalty", type=float, default=1.0,
                         help="기본 1.0=앱(WhisperKit) 일치. 1.2 등으로 anti-repeat crutch 사용 가능")
     parser.add_argument("--no_repeat_ngram_size", type=int, default=0,
@@ -562,6 +592,7 @@ if __name__ == "__main__":
         p_tail=args.p_tail,
         longform_prob=args.longform_prob,
         longform_max_sec=args.longform_max_sec,
+        noise_only_prob=args.noise_only_prob,
         repetition_penalty=args.repetition_penalty,
         no_repeat_ngram_size=args.no_repeat_ngram_size,
         init_model=args.init_model,
