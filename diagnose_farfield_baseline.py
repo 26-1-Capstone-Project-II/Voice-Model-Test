@@ -169,7 +169,7 @@ def load_records(json_dir, split, num_samples, apply_g2p):
 # 3. 모델 래퍼 (앱과 동일한 greedy 디코딩 + avgLogProb)
 # ────────────────────────────────────────────
 class GreedyDecoder:
-    def __init__(self, model_path, device=None, neutral=True):
+    def __init__(self, model_path, device=None, neutral=True, allow_eot=False):
         from transformers import WhisperProcessor, WhisperForConditionalGeneration
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         print(f"📥 모델 로드: {model_path}  (device={self.device})")
@@ -185,6 +185,14 @@ class GreedyDecoder:
             gc.repetition_penalty = 1.0
             gc.no_repeat_ngram_size = 0
             print("  🎚️  중립 디코딩: repetition_penalty=1.0, no_repeat_ngram_size=0 (앱 일치)")
+        if allow_eot:
+            # 진단용: begin_suppress_tokens 에서 EOS(50257) 를 빼 첫 토큰 EOS 를 허용한다.
+            # Whisper 기본값 [220, 50257] 은 빈 출력 방지로 첫-EOS 를 막아, 비음성에도
+            # 강제로 텍스트를 내게 한다. 이를 풀면 noise-only 환각이 데이터로 검증됨.
+            gc = self.model.generation_config
+            bs = list(getattr(gc, "begin_suppress_tokens", None) or [])
+            gc.begin_suppress_tokens = [t for t in bs if t != self.model.config.eos_token_id]
+            print(f"  🔓 begin_suppress EOS 해제: {bs} → {gc.begin_suppress_tokens} (첫 토큰 EOS 허용)")
 
     @torch.no_grad()
     def transcribe(self, audio: np.ndarray):
@@ -358,6 +366,9 @@ def main():
     ap.add_argument("--rir_root", default=os.environ.get("RIR_DIR", "/data/RIRS_NOISES/simulated_rirs"))
     ap.add_argument("--noise_only_clips", type=int, default=50)
     ap.add_argument("--no_neutral", action="store_true", help="학습 config 그대로(anti-repeat 유지)")
+    ap.add_argument("--allow_eot", action="store_true",
+                    help="진단: begin_suppress 에서 EOS 제거 → 첫 토큰 EOS 허용(비음성→빈 출력 가능). "
+                         "noise-only 환각의 원인이 디코딩(begin_suppress)임을 검증")
     ap.add_argument("--output_dir", default="results/farfield_baseline")
     args = ap.parse_args()
 
@@ -365,7 +376,7 @@ def main():
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    decoder = GreedyDecoder(args.model_path, neutral=not args.no_neutral)
+    decoder = GreedyDecoder(args.model_path, neutral=not args.no_neutral, allow_eot=args.allow_eot)
     aug = build_augmentor(args.noise_root, args.rir_root)
     records = load_records(args.json_dir, args.split, args.num_samples, args.apply_g2p)
 
