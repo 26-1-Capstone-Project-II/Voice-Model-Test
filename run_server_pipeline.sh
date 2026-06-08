@@ -29,6 +29,9 @@ cd "$ROOT"
 GPU="${GPU:-0}"
 DATA_DIR="${DATA_DIR:-zeroth_dataset}"
 BASELINE_MODEL="${BASELINE_MODEL:-best_model_zeroth_aug/best}"
+# 기본: 성숙한 모델에서 *이어서* 학습 (깨끗한 정확도 보존 + 증강만 추가).
+# 생짜(openai/whisper-base)에서 처음부터 학습하려면 INIT_MODEL=scratch 로.
+INIT_MODEL="${INIT_MODEL:-$BASELINE_MODEL}"
 OUT_DIR="${OUT_DIR:-best_model_whisper}"
 RESULTS="${RESULTS:-results}"
 export MUSAN_NOISE_DIR="${MUSAN_NOISE_DIR:-/data/musan/noise}"
@@ -38,12 +41,17 @@ SMOKE="${SMOKE:-0}"
 PY="PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=$GPU python"
 NEW_MODEL="$OUT_DIR/best"
 
+# 이어서 학습(권장)이면 낮은 LR 권장. 생짜면 2e-5.
+[ "$INIT_MODEL" != "scratch" ] && DEFAULT_LR="1e-5" || DEFAULT_LR="2e-5"
+LR="${LR:-$DEFAULT_LR}"
+EPOCHS="${EPOCHS:-3}"
+
 if [ "$SMOKE" = "1" ]; then
     echo "🧪 SMOKE 모드 — 소량/1에폭 빠른 배선 점검"
-    DIAG_N=8; TRAIN_ARGS="--max_samples 200 --num_epochs 1"; NOISE_CLIPS=4
+    DIAG_N=8; TRAIN_ARGS="--max_samples 200 --num_epochs 1 --lr $LR"; NOISE_CLIPS=4
 else
     echo "🚀 본 학습 모드"
-    DIAG_N=200; TRAIN_ARGS="--num_epochs 3"; NOISE_CLIPS=50
+    DIAG_N=200; TRAIN_ARGS="--num_epochs $EPOCHS --lr $LR"; NOISE_CLIPS=50
 fi
 
 echo "  GPU=$GPU  DATA_DIR=$DATA_DIR"
@@ -68,11 +76,19 @@ fi
 
 # ── STEP 1: 증강 재학습 (꼬리 + long-form + 앱 일치 디코딩) ──
 echo ""; echo "════════ STEP 1: 증강 재학습 ════════"
+# init_model: 성숙한 모델에서 이어서 학습(권장). INIT_MODEL=scratch 면 생짜에서.
+INIT_ARG=""
+if [ "$INIT_MODEL" != "scratch" ] && [ -f "$INIT_MODEL/config.json" ]; then
+    INIT_ARG="--init_model $INIT_MODEL"
+    echo "  ↪️  $INIT_MODEL 에서 이어서 학습"
+else
+    echo "  ↪️  openai/whisper-base 에서 처음부터 학습"
+fi
 eval $PY finetune_whisper.py \
     --json_dir "$DATA_DIR" --apply_g2p \
     --p_tail 0.3 --longform_prob 0.3 \
-    --lr 2e-5 --batch_size 8 --grad_accum 2 \
-    --output_dir "$OUT_DIR" $TRAIN_ARGS
+    --batch_size 8 --grad_accum 2 \
+    --output_dir "$OUT_DIR" $INIT_ARG $TRAIN_ARGS
 
 [ -f "$NEW_MODEL/config.json" ] || { echo "❌ 재학습 결과 $NEW_MODEL 없음 — 학습 실패"; exit 1; }
 

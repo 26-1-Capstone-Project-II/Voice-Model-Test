@@ -341,6 +341,7 @@ def train(
     longform_max_sec=28.0,
     repetition_penalty=1.0,
     no_repeat_ngram_size=0,
+    init_model=None,
 ):
     # Lazy imports (PEFT 버전 충돌 방지)
     from transformers import (
@@ -354,10 +355,15 @@ def train(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # 초기 가중치: init_model 이 주어지면 그 체크포인트에서 *이어서* 학습한다.
+    # (성숙한 best_model_zeroth_aug/best 에 새 증강만 얹어 깨끗한 정확도 보존)
+    # 없으면 생짜 BASE_MODEL 에서 처음부터 학습.
+    src_model = init_model or BASE_MODEL
+
     # ── 1. Processor 로드 ──
-    print(f"\n📥 Processor 로드: {BASE_MODEL}")
+    print(f"\n📥 Processor 로드: {src_model}")
     processor = WhisperProcessor.from_pretrained(
-        BASE_MODEL, language="ko", task="transcribe"
+        src_model, language="ko", task="transcribe"
     )
 
     # ── 2. 데이터 로드 ──
@@ -407,8 +413,8 @@ def train(
     val_ds = WhisperPhoneticDataset(val_records, processor, augmentor=None)
 
     # ── 4. 모델 로드 ──
-    print(f"\n📥 모델 로드: {BASE_MODEL}")
-    model = WhisperForConditionalGeneration.from_pretrained(BASE_MODEL)
+    print(f"\n📥 모델 로드: {src_model}" + ("  (이어서 학습)" if init_model else "  (생짜에서 학습)"))
+    model = WhisperForConditionalGeneration.from_pretrained(src_model)
 
     # 강제 디코더 토큰 설정 (한국어, 전사 태스크)
     model.config.forced_decoder_ids = processor.get_decoder_prompt_ids(
@@ -490,8 +496,8 @@ def train(
     )
 
     # ── 7. 학습 시작 ──
-    print(f"\n🚀 Whisper Tiny 발음 전사 파인튜닝 시작!")
-    print(f"   모델: {BASE_MODEL} ({total_params/1e6:.0f}M params)")
+    print(f"\n🚀 Whisper 발음 전사 파인튜닝 시작!")
+    print(f"   모델: {src_model} ({total_params/1e6:.0f}M params)")
     print(f"   Train: {len(splits['train']):,}개 / Val: {len(val_records):,}개")
     print(f"   LR: {lr} / Epochs: {num_epochs} / Batch: {batch_size}×{grad_accum}")
     print(f"   스텝/에폭: {steps_per_epoch:,} / 총 스텝: {total_steps:,}")
@@ -537,6 +543,9 @@ if __name__ == "__main__":
                         help="기본 1.0=앱(WhisperKit) 일치. 1.2 등으로 anti-repeat crutch 사용 가능")
     parser.add_argument("--no_repeat_ngram_size", type=int, default=0,
                         help="기본 0=앱 일치. 3 등으로 반복 억제 crutch 사용 가능")
+    parser.add_argument("--init_model", type=str, default=None,
+                        help="이 체크포인트에서 이어서 학습 (예: best_model_zeroth_aug/best). "
+                             "미지정 시 openai/whisper-base 에서 처음부터")
     args = parser.parse_args()
 
     train(
@@ -555,4 +564,5 @@ if __name__ == "__main__":
         longform_max_sec=args.longform_max_sec,
         repetition_penalty=args.repetition_penalty,
         no_repeat_ngram_size=args.no_repeat_ngram_size,
+        init_model=args.init_model,
     )
