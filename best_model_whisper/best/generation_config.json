@@ -1,28 +1,36 @@
 {
   "alignment_heads": [
     [
-      2,
+      3,
+      1
+    ],
+    [
+      4,
       2
     ],
     [
-      3,
-      0
-    ],
-    [
-      3,
-      2
-    ],
-    [
-      3,
+      4,
       3
     ],
     [
-      3,
+      4,
+      7
+    ],
+    [
+      5,
+      1
+    ],
+    [
+      5,
+      2
+    ],
+    [
+      5,
       4
     ],
     [
-      3,
-      5
+      5,
+      6
     ]
   ],
   "begin_suppress_tokens": [
@@ -151,11 +159,9 @@
   "language": "ko",
   "max_initial_timestamp_index": 50,
   "max_length": 448,
-  "no_repeat_ngram_size": 3,
   "no_timestamps_token_id": 50363,
   "pad_token_id": 50257,
   "prev_sot_token_id": 50361,
-  "repetition_penalty": 1.2,
   "return_timestamps": false,
   "suppress_tokens": [],
   "task": "transcribe",
