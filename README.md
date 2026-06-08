@@ -1,7 +1,7 @@
 # 🔊 온보이스 (On-Voice) — 발음 교정 모듈
 
 > 청각장애인을 위한 발음 교정 앱 **온보이스**의 AI 발음 분석 백엔드
-> Whisper Tiny + G2P 기반 발음 전사 & 자모 레벨 오류 감지 시스템
+> Whisper-base + G2P 기반 발음 전사 & 자모 레벨 오류 감지 시스템
 
 ---
 
@@ -10,14 +10,20 @@
 ```
 .
 ├── [Whisper 발음 전사 파이프라인]
-│   ├── finetune_whisper.py          # Whisper tiny LoRA 파인튜닝
+│   ├── finetune_whisper.py          # Whisper-base 발음 전사 파인튜닝 (full fine-tuning)
+│   ├── augment.py                   # 원거리/소음 증강 (RIR 잔향 + MUSAN 소음 + 비음성 꼬리)
 │   ├── pronunciation_evaluator.py   # 발음 평가 엔진 (자모 레벨 비교)
-│   └── test_whisper_phonetic.py     # 발음 전사 테스트 + 베이스라인 비교
+│   ├── test_whisper_phonetic.py     # 발음 전사 테스트 + 베이스라인 비교
+│   └── diagnose_farfield_baseline.py # 원거리/소음/긴발화 후반부 환각 정량 측정
 │
 ├── [공용 모듈]
 │   ├── korean_g2p_nomecab.py        # MeCab 없이 동작하는 G2P (Windows 호환)
 │   ├── jamo_utils.py                # 자모 Vocab 생성 + 음절↔자모 변환 유틸리티
 │   └── vad_segment.py               # Silero-VAD 기반 오디오 세그멘테이션
+│
+├── [학습/배포 자동화]
+│   ├── run_server_pipeline.sh       # 기준선→재학습→재기준선 원샷 (Linux 서버)
+│   └── convert_to_coreml.sh         # WhisperKit CoreML 변환 + 앱 번들 교체 (macOS)
 │
 ├── [iOS 변환 모델]
 │   └── Whisper_CoreML_Model/        # 🍏 ANE 호환 CoreML 변환 완료된 앱 탑재용 모델
@@ -77,11 +83,11 @@
 
 | 항목 | 내용 |
 |------|------|
-| **베이스 모델** | [openai/whisper-tiny](https://huggingface.co/openai/whisper-tiny) |
-| **파인튜닝 방식** | **LoRA (Low-Rank Adaptation)** — 베이스 음향 인식 능력 보존, 출력 분포만 효율적으로 재조정 |
+| **베이스 모델** | [openai/whisper-base](https://huggingface.co/openai/whisper-base) (≈74M params) |
+| **파인튜닝 방식** | **Full fine-tuning** — 전체 파라미터(~73M)를 학습해 출력 분포를 발음 전사로 재조정 |
 | **학습 데이터셋** | **Zeroth-Korean (낭독체, 약 51시간)** |
 | **라벨 생성** | 원본 텍스트를 `g2pk`로 자동 변환하여 발음 전사 라벨 생성 |
-| **학습 결과** | **검증 CER 0.088 (8.8%)** |
+| **학습 결과** | **검증 CER 0.088 (8.8%)** (이후 원거리/소음 증강 재학습으로 추가 개선 — [아래 섹션](#-원거리소음-강건성-증강-재학습) 참조) |
 | **저장 경로** | `best_model_whisper/best` |
 
 ### 라벨 변환 예시 (g2pk 적용)
@@ -95,7 +101,7 @@
 ### 학습이 의도한 동작 변화
 
 Whisper의 강력한 LM이 자동 수행하던 **맞춤법 교정 동작을, g2pk가 만들어낸 발음 전사 라벨로 재학습**시켜 소리 나는 대로 출력하도록 행동을 바꾸는 것이 핵심입니다.
-**LoRA**를 사용함으로써 베이스 모델의 음향 인식 능력은 보존하면서, 출력 분포만 효율적으로 재조정했습니다.
+전체 파라미터를 파인튜닝(full fine-tuning)하여 베이스 모델의 음향 인식 능력 위에 발음 전사 출력 분포를 재학습했습니다.
 
 ### 💡 왜 구음장애가 아닌 '정상 낭독체'를 쓰는가?
 
@@ -109,6 +115,66 @@ Whisper의 강력한 LM이 자동 수행하던 **맞춤법 교정 동작을, g2p
 - 라벨(G2P): "가치 머거요"
 - **해결책:** 모델은 100% "정확한 소리 = 정확한 발음 기호"의 1:1 매핑만을 학습합니다.
 - **결과:** 추론 시 환자가 "가티 머거요"라고 틀리게 말하면, 모델은 교정하는 법을 배운 적이 없기 때문에 들은 그대로 **"가티 머거요"를 Raw 출력** → **발음 오류 감지 성공!**
+
+---
+
+## 📡 원거리/소음 강건성 증강 재학습
+
+깨끗한 낭독체로만 학습한 모델은 실기기 사용 환경(50cm~1m 거리 + 생활 소음)에서 **긴 발화 후반부를 "확신에 차서" 잘못 전사(환각)** 하는 문제가 있었습니다. 모델 신뢰도(avgLogProb)는 정상 수준이라 온디바이스 신호로는 탐지가 불가능 — 즉 **앱 코드가 아니라 데이터 분포로 풀어야 하는** 문제입니다.
+
+### 증강 파이프라인 ([augment.py](augment.py))
+
+train split에만 파형 도메인에서 다음을 확률적으로 적용합니다:
+
+| 증강 | 목적 |
+|------|------|
+| **RIR 잔향** (OpenSLR RIRS_NOISES) | 책상 위 50cm~1m 거리감(원거리) 시뮬레이션 |
+| **소음 믹싱 @ SNR 스윕** (MUSAN, 0~20dB) | 선풍기/에어컨/카페 등 실생활 소음 |
+| **비음성 꼬리** (`p_tail`) | 음성 뒤에 노이즈/무음 구간 추가 → "말 끝난 뒤 30초 윈도우 잔여 구간" 후반부 환각 억제 |
+| **long-form 결합** (`longform_prob`) | 짧은 발화 여러 개를 이어 붙여 ~28초 연속 발화 생성 → 30초 윈도우 후반부 분포 학습 |
+| **SpecAugment** | 시간/주파수 마스킹 |
+
+### 재학습 전략 — 생짜가 아니라 **이어서**
+
+`openai/whisper-base` 생짜에서 처음부터 학습하면 짧은 에폭으론 기존 모델을 못 따라잡습니다. 대신 **성숙한 모델에서 이어서 학습**합니다(`--init_model best_model_zeroth_aug/best`, LR 1e-5):
+
+```bash
+# 기준선(전) → 증강 재학습 → 기준선(후) 원샷 (Linux 서버)
+./run_server_pipeline.sh
+```
+
+### 측정 결과 ([diagnose_farfield_baseline.py](diagnose_farfield_baseline.py), Zeroth test, 앱 일치 greedy 디코딩)
+
+| 조건 | 재학습 전 CER | 재학습 후 CER |
+|------|------:|------:|
+| clean (회귀 점검) | 0.028 | **0.019** ✅ 개선 |
+| reverb+noise (원거리+소음) | 0.112 | **0.090** ✅ |
+| reverb+noise+꼬리 (후반부) | 0.175 (WER 0.30) | **0.144 (WER 0.17)** ✅ |
+
+→ **깨끗한 음성 회귀 없이**(오히려 개선) 원거리·소음·긴발화 후반부 전사 정확도가 향상됐습니다.
+
+---
+
+## 🔇 noise-only 환각은 학습이 아니라 **디코딩** 문제
+
+순수 비음성(노이즈만 있는 구간) 환각은 위 증강 재학습으로도 **100% 그대로**였습니다. 원인은 데이터가 아니라 Whisper의 디코딩 설정이었습니다:
+
+> `begin_suppress_tokens = [220, 50257]` — **50257(EOS)을 첫 생성 토큰에서 차단**(빈 출력 방지 기본값). 따라서 비음성 입력에도 모델이 **강제로 텍스트를 뱉습니다.**
+
+[diagnose_farfield_baseline.py](diagnose_farfield_baseline.py) `--allow_eot`로 begin_suppress에서 EOS만 제거하고 동일 모델로 재측정:
+
+| 디코딩 | noise-only 환각률 | 음성 조건 |
+|--------|------:|------|
+| 기본 (begin_suppress `[220, 50257]`) | **98%** | 정상 |
+| EOS 허용 (`[220]`) | **0%** ✅ | 회귀 없음 (clean 동일, reverb 개선) |
+
+**→ 앱(WhisperKit) 적용:** `DecodingOptions.suppressBlank = false` (필요 시 `noSpeechThreshold` 조정). 첫 토큰 EOS를 허용하면 비음성 구간이 빈 출력으로 처리되어 환각이 사라집니다.
+
+```swift
+var options = DecodingOptions()
+options.suppressBlank = false        // 비음성 구간 환각 제거 (첫 토큰 EOS 허용)
+let result = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
+```
 
 ---
 
