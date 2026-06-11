@@ -62,6 +62,16 @@ class MMSBackend:
         self.tok = AutoTokenizer.from_pretrained("facebook/mms-tts-kor")
         self.model.eval()
         self.sr = self.model.config.sampling_rate  # 16000
+        # mms-tts-kor 토크나이저는 한글에 uroman 로마자화가 필요하다. 미설치면 토큰이
+        # 빈값(size 0)이 돼 *모든* 합성이 조용히 실패한다 → 시작 시점에 명확히 막는다.
+        if getattr(self.tok, "is_uroman", False):
+            try:
+                import uroman  # noqa: F401  (transformers 가 자동 적용)
+            except Exception:
+                raise SystemExit(
+                    "❌ mms-tts-kor 는 uroman 이 필요합니다 (한글 로마자화).\n"
+                    "   해결: pip install uroman   (python>=3.10)\n"
+                    "   또는: --backend gtts (인터넷) / --backend melo 사용")
         if torch.cuda.is_available():
             self.model = self.model.cuda()
             self.cuda = True
@@ -259,6 +269,12 @@ def main():
     finally:
         for w in writers.values():
             w.close()
+
+    total = sum(counts.values())
+    if total == 0:
+        print(f"\n❌ 합성 결과 0개 — TTS 백엔드 점검 필요(예: --backend gtts, 또는 "
+              f"mms 라면 pip install uroman). 실패/스킵 {fail:,}개")
+        raise SystemExit(1)
 
     print(f"\n✅ 완료 → {out_dir}")
     for sp in ("train", "validation", "test"):

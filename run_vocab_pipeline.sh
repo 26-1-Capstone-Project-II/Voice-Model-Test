@@ -36,7 +36,7 @@ INIT_MODEL="${INIT_MODEL:-$BASELINE_MODEL}"
 OUT_DIR="${OUT_DIR:-best_model_vocab}"
 RESULTS="${RESULTS:-results_vocab}"
 OVERSAMPLE="${OVERSAMPLE:-3}"                                 # TTS 타깃셋 노출 배수
-TTS_BACKEND="${TTS_BACKEND:-mms}"
+TTS_BACKEND="${TTS_BACKEND:-gtts}"   # gtts(인터넷·외래어 발음 정확) 기본. 오프라인은 mms+uroman
 export MUSAN_NOISE_DIR="${MUSAN_NOISE_DIR:-/data/musan/noise}"
 export RIR_DIR="${RIR_DIR:-/data/RIRS_NOISES/simulated_rirs}"
 SMOKE="${SMOKE:-0}"
@@ -70,17 +70,17 @@ echo "  INIT=$INIT_MODEL  →  OUT=$NEW_MODEL  (oversample ×$OVERSAMPLE)"
 
 # ── STEP A: 외래어 TTS 합성셋 준비 ─────────────────────────
 echo ""; echo "════════ STEP A: 외래어 TTS 합성셋 ════════"
-if [ -f "$LOANWORD_DIR/train.jsonl" ]; then
+if [ -s "$LOANWORD_DIR/train.jsonl" ]; then
     echo "  ✅ 이미 존재 → $LOANWORD_DIR (재생성 원하면 디렉터리 삭제 후 재실행)"
 else
     eval $PY prepare_loanword_tts.py --backend "$TTS_BACKEND" \
         --output_dir "$LOANWORD_DIR" $TTS_ARGS
 fi
-[ -f "$LOANWORD_DIR/test.jsonl" ] && LOAN_EVAL="$LOANWORD_DIR" || LOAN_EVAL=""
+[ -s "$LOANWORD_DIR/test.jsonl" ] && LOAN_EVAL="$LOANWORD_DIR" || LOAN_EVAL=""
 
 # ── STEP B: KsponSpeech 정규화셋 준비(선택) ────────────────
 echo ""; echo "════════ STEP B: KsponSpeech 정규화셋 ════════"
-if [ -f "$KSPON_DIR/train.jsonl" ]; then
+if [ -s "$KSPON_DIR/train.jsonl" ]; then
     echo "  ✅ 이미 존재 → $KSPON_DIR"
 elif [ -n "${KSPON_AUDIO_ROOT:-}" ] && [ -n "${KSPON_TRN:-}" ]; then
     eval $PY prepare_kspon.py --audio_root "$KSPON_AUDIO_ROOT" --trn "$KSPON_TRN" \
@@ -92,8 +92,8 @@ fi
 
 # ── 추가 소스 목록 구성 ────────────────────────────────────
 EXTRA=""
-[ -f "$LOANWORD_DIR/train.jsonl" ] && EXTRA="$LOANWORD_DIR"
-[ -f "$KSPON_DIR/train.jsonl" ] && EXTRA="${EXTRA:+$EXTRA,}$KSPON_DIR"
+[ -s "$LOANWORD_DIR/train.jsonl" ] && EXTRA="$LOANWORD_DIR"
+[ -s "$KSPON_DIR/train.jsonl" ] && EXTRA="${EXTRA:+$EXTRA,}$KSPON_DIR"
 [ -n "$EXTRA" ] || { echo "❌ 추가 학습 소스가 하나도 없음 — 중단"; exit 1; }
 echo ""; echo "  ➕ 학습 추가 소스: $EXTRA"
 

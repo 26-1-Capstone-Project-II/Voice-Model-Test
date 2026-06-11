@@ -153,6 +153,14 @@ def main():
 
     rng = random.Random(args.seed)
     rng.shuffle(pairs)
+
+    # 존재하는 오디오만 먼저 거른 뒤 max_utts 적용.
+    # (오디오 일부 part 만 압축 해제한 경우에도 max_utts 개수를 정확히 채우도록)
+    before = len(pairs)
+    pairs = [p for p in pairs if Path(p[0]).exists()]
+    if len(pairs) < before:
+        print(f"   🔎 오디오 존재 필터: {before:,} → {len(pairs):,}개 "
+              f"(미해제 part 는 자동 제외)")
     if args.max_utts > 0:
         pairs = pairs[:args.max_utts]
 
