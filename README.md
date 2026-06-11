@@ -16,13 +16,19 @@
 │   ├── test_whisper_phonetic.py     # 발음 전사 테스트 + 베이스라인 비교
 │   └── diagnose_farfield_baseline.py # 원거리/소음/긴발화 후반부 환각 정량 측정
 │
+├── [외래어/저빈도어 어휘 확장]
+│   ├── loanword_corpus.py           # 외래어 시드 어휘 + carrier 문장 생성기(조사 받침 처리)
+│   ├── prepare_loanword_tts.py      # 외래어 TTS 타깃 합성 코퍼스 (mms/melo/gtts/xtts)
+│   └── prepare_kspon.py             # KsponSpeech 정규화((발음) 채택) → 학습 JSONL
+│
 ├── [공용 모듈]
 │   ├── korean_g2p_nomecab.py        # MeCab 없이 동작하는 G2P (Windows 호환)
 │   ├── jamo_utils.py                # 자모 Vocab 생성 + 음절↔자모 변환 유틸리티
 │   └── vad_segment.py               # Silero-VAD 기반 오디오 세그멘테이션
 │
 ├── [학습/배포 자동화]
-│   ├── run_server_pipeline.sh       # 기준선→재학습→재기준선 원샷 (Linux 서버)
+│   ├── run_server_pipeline.sh       # 원거리/소음 기준선→재학습→재기준선 원샷 (Linux 서버)
+│   ├── run_vocab_pipeline.sh        # 외래어/저빈도어 어휘 확장 재학습 원샷 (Linux 서버)
 │   └── convert_to_coreml.sh         # WhisperKit CoreML 변환 + 앱 번들 교체 (macOS)
 │
 ├── [iOS 변환 모델]
@@ -175,6 +181,40 @@ var options = DecodingOptions()
 options.suppressBlank = false        // 비음성 구간 환각 제거 (첫 토큰 EOS 허용)
 let result = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
 ```
+
+---
+
+## 🌐 외래어/저빈도어 어휘 확장 재학습
+
+실기기에서 외래어·저빈도어가 OOV로 오인식됩니다(데시벨 → "대시베르", 스톤 프로젝트 → "캠핑카 소개팅"). 원인은 음향이 아니라 **어휘**입니다 — Zeroth는 순수 한국어 낭독체라 이 음절열의 acoustic→text 매핑을 본 적이 없습니다. 따라서 RIR/소음 증강이 아니라 **학습 데이터의 어휘 도메인 확장**으로 풉니다.
+
+### 두 갈래 데이터 소스
+
+| 소스 | 스크립트 | 역할 |
+|------|----------|------|
+| **TTS 타깃 합성** | [prepare_loanword_tts.py](prepare_loanword_tts.py) + [loanword_corpus.py](loanword_corpus.py) | 실패하는 어휘를 carrier 문장에 끼워 한국어 TTS(`mms`/`melo`/`gtts`/`xtts`)로 합성. 실패 케이스를 **정확히 타깃**. 화자 섭동(pitch/tempo)으로 음향 다양성 확보 |
+| **실제 자유대화** | [prepare_kspon.py](prepare_kspon.py) | KsponSpeech 정규화. **이중전사 `(철자)/(발음)`에서 (발음)을 채택** → 외래어가 들리는 대로(SK→에스케이) 라벨링되어 발음 전사 모델과 정확히 일치. AIHub 수동 다운로드 전제 |
+
+두 소스는 **섞어서** 씁니다(TTS 단독 금지 — 운율/단일화자 도메인 갭). 합성셋의 운율 갭은 학습 단계의 기존 음향 증강(RIR/소음/SpecAugment)과 화자 섭동이 메웁니다.
+
+### 학습 전략 — 이어서 + 추가 소스 병합 + 기존 증강 유지
+
+기존 [원거리/소음 강건성](#-원거리소음-강건성-증강-재학습)을 깨지 않도록, 현재 배포 모델에서 **이어서** 학습하고 음향 증강은 그대로 둔 채 train에만 어휘 소스를 더합니다. val/test는 Zeroth만 유지해 **clean 정확도 회귀를 정직하게** 측정합니다.
+
+```bash
+# 준비 → 전 기준선(외래어 OOV + Zeroth 회귀) → 어휘 확장 재학습 → 후 기준선 원샷 (Linux 서버)
+KSPON_AUDIO_ROOT=/data/KsponSpeech KSPON_TRN=/data/KsponSpeech_scripts/train.trn \
+    ./run_vocab_pipeline.sh
+
+# 빠른 배선 점검 (소량/1에폭, gtts 합성)
+SMOKE=1 ./run_vocab_pipeline.sh
+```
+
+`finetune_whisper.py`에 추가된 토글:
+- `--extra_json_dirs loanword_dataset,kspon_dataset` — train에 더할 추가 소스(콤마 구분)
+- `--oversample 3` — 소규모 TTS 타깃셋을 N배 복제해 노출 빈도 확보
+
+외래어 평가셋은 TTS 합성셋의 held-out `test.jsonl`이며, 진단의 `clean` 조건 CER이 OOV 개선의 핵심 지표입니다. **운용:** 새 실패 어휘가 나오면 [loanword_corpus.py](loanword_corpus.py)의 `WORDS`에 단어를 추가하고 재합성·재학습하면 됩니다.
 
 ---
 
