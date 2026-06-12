@@ -4,6 +4,17 @@ sampled_dataset/
 zeroth_dataset/
 구음장애 음성인식 데이터/
 
+# 어휘 확장 데이터셋/원본 (용량 큼 — 서버 생성물, 커밋 금지)
+loanword_dataset/
+kspon_dataset/
+10.한국어음성/
+KsponSpeech*.zip
+KsponSpeech*.zip.part*
+results_vocab/
+
+# 어휘 확장 재학습 출력 (best/ 만 커밋, 중간 체크포인트는 무시)
+best_model_vocab/checkpoint-*/
+
 # 이전/기타 모델 출력
 finetuned_model/
 quantized_model/
