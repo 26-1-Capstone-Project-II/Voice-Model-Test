@@ -6,7 +6,7 @@ loanword_corpus.py 가 만든 발화 원문을 한국어 TTS 로 합성해, Zero
 과 동일(JSONL: wav_path/transcript/label/duration)해서 finetune_whisper.py 가 그대로 읽는다.
 
 왜 TTS 인가:
-  - 실패하는 어휘를 '정확히' 타깃할 수 있다(실제 코퍼스엔 데시벨·스톤이 거의 안 나옴).
+  - 실패하는 어휘를 '정확히' 타깃할 수 있다(실제 코퍼스엔 데시벨·캡스톤이 거의 안 나옴).
   - 합성 발화의 운율/단일화자 도메인 갭은 학습 단계의 음향 증강(RIR/소음/SpecAugment)과
     여기 들어간 화자 섭동(pitch/tempo)이 상당 부분 메운다.
   - 실제 자유대화 코퍼스(prepare_kspon.py)와 '섞어서' 쓰는 게 전제다. 단독 사용 금지.
