@@ -86,7 +86,7 @@
       "name" : "MLModelType_mlProgram"
     },
     "userDefinedMetadata" : {
-      "com.github.apple.coremltools.conversion_date" : "2026-06-08",
+      "com.github.apple.coremltools.conversion_date" : "2026-07-09",
       "com.github.apple.coremltools.source" : "torch==2.5.0",
       "com.github.apple.coremltools.version" : "9.0",
       "com.github.apple.coremltools.source_dialect" : "TorchScript"
