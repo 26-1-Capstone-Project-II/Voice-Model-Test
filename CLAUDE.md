@@ -40,6 +40,11 @@ COMPETING_PROB=0.3 ./run_server_pipeline.sh
 python finetune_whisper.py --json_dir zeroth_dataset --apply_g2p --competing_prob 0.3 ...
 # 단위 테스트
 python test_competing_speaker.py
+
+# §9 다화자 평가 (재학습 전후 대조): comp_sir* 조건 + 자모 손실 오류율(JER)
+python diagnose_farfield_baseline.py --model_path best_model_whisper/best \
+    --json_dir zeroth_dataset --apply_g2p --num_samples 200 \
+    --competing_sir_list 0,5,10,15,20 --competing_overlaps 0.5,1.0
 ```
 
 ### 필수 테스트 (`test_competing_speaker.py`)

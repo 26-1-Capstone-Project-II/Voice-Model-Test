@@ -42,6 +42,8 @@ import numpy as np
 import torch
 import librosa
 
+from jamo_utils import syllable_to_jamo   # 자모 손실 오류율(발음 전사 우선 지표, 플랜 §9)
+
 torch.backends.cudnn.enabled = False
 
 TARGET_SR = 16000
@@ -121,6 +123,17 @@ def insertion_rate(ref: str, hyp: str) -> float:
         return float(len(hyp_c) > 0)
     ops = _edit_ops(ref_c, hyp_c)
     return ops["ins"] / max(1, ops["ref_len"])
+
+
+def jer(ref: str, hyp: str) -> float:
+    """자모 손실 오류율(Jamo Error Rate) — 음절을 초/중/종성 자모로 분해 후 편집거리/참조 자모.
+    발음 전사 모델에는 음절 단위 CER 보다 세밀해, 부분 오발음을 더 잘 잡는다(플랜 §9 우선 지표)."""
+    r = syllable_to_jamo(_norm(ref).replace(" ", ""))
+    h = syllable_to_jamo(_norm(hyp).replace(" ", ""))
+    if not r:
+        return 0.0 if not h else 1.0
+    ops = _edit_ops(r, h)
+    return (ops["sub"] + ops["ins"] + ops["del"]) / max(1, ops["ref_len"])
 
 
 # ────────────────────────────────────────────
@@ -254,6 +267,44 @@ def degrade(aug, audio, *, reverb=False, snr_db=None):
     return a.astype(np.float32)
 
 
+def _fit_len(x, n):
+    """길이 n 으로 결정적 맞춤(자르기/타일링). 평가 재현성을 위해 random 미사용."""
+    if len(x) == 0:
+        return np.zeros(n, dtype=np.float32)
+    if len(x) >= n:
+        return x[:n].astype(np.float32)
+    reps = int(np.ceil(n / len(x)))
+    return np.tile(x, reps)[:n].astype(np.float32)
+
+
+def mix_competing(target, interferer, *, sir_db, overlap_frac):
+    """평가용 결정적 경쟁 화자 혼합 (학습 augment 와 동일 규약, 무작위성 제거).
+
+    - 타깃 우세 SIR(dB)로 held-out 간섭 화자를 겹침 구간에만 더한다(타깃 파괴 없음).
+    - overlap_frac<1: 부분 겹침(구간 중앙 배치). overlap_frac>=1: 완전 겹침.
+    - SIR 은 겹침 구간 파워로 정의.
+    """
+    target = target.astype(np.float32)
+    L = len(target)
+    if L == 0 or len(interferer) == 0:
+        return target
+    seg_len = max(1, min(L, int(round(overlap_frac * L))))
+    start = (L - seg_len) // 2                      # 결정적 중앙 배치
+    interf_seg = _fit_len(interferer.astype(np.float32), seg_len)
+
+    tgt_region = target[start:start + seg_len]
+    tgt_p = float(np.mean(tgt_region ** 2)) + 1e-8
+    interf_p = float(np.mean(interf_seg ** 2)) + 1e-8
+    scale = np.sqrt(tgt_p / (10 ** (sir_db / 10)) / interf_p)
+
+    out = target.copy()
+    out[start:start + seg_len] = tgt_region + scale * interf_seg
+    peak = float(np.max(np.abs(out))) if len(out) else 0.0
+    if peak > 0.99:
+        out = out * (0.99 / peak)
+    return out.astype(np.float32)
+
+
 def append_noise_tail(aug, audio, tail_sec, snr_db=10.0, total_sec=MAX_AUDIO_SEC):
     """
     음성 뒤에 비음성(노이즈) 꼬리를 붙여 '말 끝난 뒤 윈도우 잔여 구간' 재현.
@@ -281,7 +332,7 @@ def append_noise_tail(aug, audio, tail_sec, snr_db=10.0, total_sec=MAX_AUDIO_SEC
 # ────────────────────────────────────────────
 # 5. 조건 정의 & 실행
 # ────────────────────────────────────────────
-def make_conditions(snr_list, tail_sec):
+def make_conditions(snr_list, tail_sec, competing_sir_list=None, competing_overlaps=None):
     conds = [{"name": "clean", "reverb": False, "snr": None, "tail": 0.0}]
     conds.append({"name": "reverb", "reverb": True, "snr": None, "tail": 0.0})
     for snr in snr_list:
@@ -291,23 +342,39 @@ def make_conditions(snr_list, tail_sec):
         # 후반부 환각 집중 조건: 음성 + 비음성 꼬리
         conds.append({"name": f"clean+tail{int(tail_sec)}", "reverb": False, "snr": None, "tail": tail_sec})
         conds.append({"name": f"reverb+noise+tail{int(tail_sec)}", "reverb": True, "snr": 10.0, "tail": tail_sec})
+    # 경쟁 화자(다화자) 조건: held-out 간섭 화자를 타깃 우세 SIR × 겹침으로 혼합 (플랜 §9.1)
+    for sir in (competing_sir_list or []):
+        for ov in (competing_overlaps or []):
+            tag = "full" if ov >= 1.0 else f"ov{int(round(ov * 100))}"
+            conds.append({
+                "name": f"comp_sir{int(sir)}_{tag}",
+                "reverb": False, "snr": None, "tail": 0.0,
+                "competing": {"sir": float(sir), "overlap": float(ov)},
+            })
     return conds
 
 
-def run_condition(decoder, aug, records, cond):
+def run_condition(decoder, aug, records, cond, pair=None):
     rows = []
-    for rec in records:
+    comp = cond.get("competing")
+    for i, rec in enumerate(records):
         audio, _ = librosa.load(rec["wav_path"], sr=TARGET_SR, mono=True)
         audio = audio[: int(MAX_SRC_SEC * TARGET_SR)]
-        a = degrade(aug, audio, reverb=cond["reverb"], snr_db=cond["snr"])
-        if cond["tail"] > 0:
-            a = append_noise_tail(aug, a, cond["tail"], snr_db=(cond["snr"] or 10.0))
+        if comp is not None:
+            # held-out 간섭 화자 = 페어링된 다른 test 발화 (화자 배타·자기혼합 회피)
+            j = pair[i] if pair is not None else (i + len(records) // 2) % max(1, len(records))
+            interf, _ = librosa.load(records[j]["wav_path"], sr=TARGET_SR, mono=True)
+            a = mix_competing(audio, interf, sir_db=comp["sir"], overlap_frac=comp["overlap"])
+        else:
+            a = degrade(aug, audio, reverb=cond["reverb"], snr_db=cond["snr"])
+            if cond["tail"] > 0:
+                a = append_noise_tail(aug, a, cond["tail"], snr_db=(cond["snr"] or 10.0))
         a = a[: int(MAX_AUDIO_SEC * TARGET_SR)]
         hyp, avg_lp = decoder.transcribe(a)
         ref = rec["label"]
         rows.append({
             "ref": ref, "hyp": hyp,
-            "cer": cer(ref, hyp), "wer": wer(ref, hyp),
+            "cer": cer(ref, hyp), "jer": jer(ref, hyp), "wer": wer(ref, hyp),
             "ins_rate": insertion_rate(ref, hyp),
             "len_ratio": len(_norm(hyp).replace(" ", "")) / max(1, len(_norm(ref).replace(" ", ""))),
             "avg_logprob": avg_lp,
@@ -342,6 +409,7 @@ def aggregate(rows):
     return {
         "n": len(rows),
         "cer": mean("cer"),
+        "jer": mean("jer"),
         "wer": mean("wer"),
         "ins_rate": mean("ins_rate"),
         "len_ratio": mean("len_ratio"),
@@ -365,6 +433,11 @@ def main():
     ap.add_argument("--noise_root", default=os.environ.get("MUSAN_NOISE_DIR", "/data/musan/noise"))
     ap.add_argument("--rir_root", default=os.environ.get("RIR_DIR", "/data/RIRS_NOISES/simulated_rirs"))
     ap.add_argument("--noise_only_clips", type=int, default=50)
+    ap.add_argument("--competing_sir_list", default="0,5,10,15,20",
+                    help="경쟁 화자(다화자) 조건의 타깃 우세 SIR(dB) 목록. 빈 값이면 다화자 조건 생략")
+    ap.add_argument("--competing_overlaps", default="0.5",
+                    help="경쟁 화자 겹침 비율 목록(<1 부분, >=1 완전). 예: 0.5,1.0")
+    ap.add_argument("--no_competing", action="store_true", help="경쟁 화자(다화자) 조건 비활성")
     ap.add_argument("--no_neutral", action="store_true", help="학습 config 그대로(anti-repeat 유지)")
     ap.add_argument("--allow_eot", action="store_true",
                     help="진단: begin_suppress 에서 EOS 제거 → 첫 토큰 EOS 허용(비음성→빈 출력 가능). "
@@ -372,7 +445,13 @@ def main():
     ap.add_argument("--output_dir", default="results/farfield_baseline")
     args = ap.parse_args()
 
+    import random
+    random.seed(42); np.random.seed(42)     # 재현성(플랜 §9: 시드 고정)
+
     snr_list = [float(x) for x in args.snr_list.split(",") if x.strip() != ""]
+    competing_sir_list = [] if args.no_competing else \
+        [float(x) for x in args.competing_sir_list.split(",") if x.strip() != ""]
+    competing_overlaps = [float(x) for x in args.competing_overlaps.split(",") if x.strip() != ""]
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -380,16 +459,23 @@ def main():
     aug = build_augmentor(args.noise_root, args.rir_root)
     records = load_records(args.json_dir, args.split, args.num_samples, args.apply_g2p)
 
-    conditions = make_conditions(snr_list, args.tail_sec)
+    # 경쟁 화자 페어링: 각 타깃에 결정적으로 다른 test 발화를 간섭원으로 (자기혼합 회피)
+    N = len(records)
+    pair = [(i + N // 2) % N for i in range(N)] if N > 1 else None
+    if competing_sir_list and N <= 1:
+        print("  ⚠️ 레코드가 1개 이하 → 경쟁 화자 조건 생략")
+        competing_sir_list = []
+
+    conditions = make_conditions(snr_list, args.tail_sec, competing_sir_list, competing_overlaps)
     results = {"config": vars(args), "conditions": {}}
 
     print(f"\n{'='*72}\n  베이스라인 측정 시작 — {len(records)}개 × {len(conditions)}조건\n{'='*72}")
     for cond in conditions:
-        rows = run_condition(decoder, aug, records, cond)
+        rows = run_condition(decoder, aug, records, cond, pair=pair)
         agg = aggregate(rows)
         results["conditions"][cond["name"]] = {"agg": agg, "samples": rows[:20]}
-        print(f"  [{cond['name']:>24}]  CER={agg['cer']:.3f}  WER={agg['wer']:.3f}  "
-              f"ins={agg['ins_rate']:.3f}  len×{agg['len_ratio']:.2f}  "
+        print(f"  [{cond['name']:>24}]  CER={agg['cer']:.3f}  JER={agg['jer']:.3f}  "
+              f"WER={agg['wer']:.3f}  ins={agg['ins_rate']:.3f}  len×{agg['len_ratio']:.2f}  "
               f"halluc={agg['halluc_rate']:.1%}  lp={agg['avg_logprob']:.2f}")
 
     # 순수 노이즈 환각
@@ -414,14 +500,19 @@ def main():
 
 
 def _write_summary(path, results, conditions):
-    lines = ["# 원거리/소음/긴발화 후반부 환각 — 베이스라인\n"]
-    lines.append("| 조건 | CER | WER | 삽입률 | 길이비 | 환각률 | avgLogProb |")
-    lines.append("|------|----:|----:|------:|------:|------:|----------:|")
+    lines = ["# 원거리/소음/다화자/후반부 환각 — 베이스라인\n"]
+    lines.append("| 조건 | CER | JER | WER | 삽입률 | 길이비 | 환각률 | avgLogProb |")
+    lines.append("|------|----:|----:|----:|------:|------:|------:|----------:|")
     for cond in conditions:
         a = results["conditions"][cond["name"]]["agg"]
-        lines.append(f"| {cond['name']} | {a['cer']:.3f} | {a['wer']:.3f} | "
+        lines.append(f"| {cond['name']} | {a['cer']:.3f} | {a['jer']:.3f} | {a['wer']:.3f} | "
                      f"{a['ins_rate']:.3f} | {a['len_ratio']:.2f} | "
                      f"{a['halluc_rate']:.1%} | {a['avg_logprob']:.2f} |")
+    if any(c.get("competing") for c in conditions):
+        lines.append("\n**다화자(comp_sir*)**: held-out 간섭 화자를 타깃 우세 SIR × 겹침으로 혼합. "
+                     "SIR 이 낮을수록(간섭이 클수록) CER/JER 상승 기대. 경쟁 화자 증강 재학습 후 "
+                     "이 조건들의 열화가 완화되는지 확인한다(플랜 §7 DoD). JER 이 CER 보다 "
+                     "부분 오발음에 민감하다.\n")
     if "noise_only" in results:
         no = results["noise_only"]
         lines.append(f"\n**noise-only 순수 환각률**: {no['halluc_rate']:.1%} "

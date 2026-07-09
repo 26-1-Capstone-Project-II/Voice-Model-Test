@@ -10,7 +10,7 @@
 |---|---|---|---|
 | 9 | FarFieldAugmentor | `augment.py` → `class FarFieldAugmentor` | 스테이지·순서·config → 아래 §2 |
 | 10 | 데이터 로드 / 화자 ID | `finetune_whisper.py:load_data` (71), `WhisperPhoneticDataset` (175); 준비 `prepare_zeroth.py` | **화자 ID 없음 — §3 블로커** |
-| 11 | 자모 손실 오류율 평가 | `diagnose_farfield_baseline.py`(환각률/삽입률/CER), `jamo_utils.py`(자모 분해), `pronunciation_evaluator.py` | CER 기반. `make_compute_metrics`는 `evaluate.load("cer")` |
+| 11 | 자모 손실 오류율 평가 | `diagnose_farfield_baseline.py`(환각률/삽입률/CER/**JER**/**다화자 조건**), `jamo_utils.py`(자모 분해), `pronunciation_evaluator.py` | §9 구현 완료: `jer()` + `comp_sir*` 조건(held-out test 페어링). 학습 중 지표는 여전히 CER(`make_compute_metrics`) |
 
 ## 2. FarFieldAugmentor 실제 구조 (플랜 §7 순서와 대조)
 
