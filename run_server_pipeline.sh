@@ -36,6 +36,9 @@ OUT_DIR="${OUT_DIR:-best_model_whisper}"
 RESULTS="${RESULTS:-results}"
 export MUSAN_NOISE_DIR="${MUSAN_NOISE_DIR:-/data/musan/noise}"
 export RIR_DIR="${RIR_DIR:-/data/RIRS_NOISES/simulated_rirs}"
+# 경쟁 화자 증강(플랜 §7): held-out(test) 다른 화자를 타깃 우세 SIR 로 부분 겹침 혼합.
+# 간섭 풀은 DATA_DIR/test.jsonl(train 과 화자 배타적). 0 이면 비활성.
+COMPETING_PROB="${COMPETING_PROB:-0.3}"
 SMOKE="${SMOKE:-0}"
 
 PY="PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=$GPU python"
@@ -56,7 +59,7 @@ fi
 
 echo "  GPU=$GPU  DATA_DIR=$DATA_DIR"
 echo "  BASELINE_MODEL=$BASELINE_MODEL  →  OUT=$NEW_MODEL"
-echo "  MUSAN_NOISE_DIR=$MUSAN_NOISE_DIR  RIR_DIR=$RIR_DIR"
+echo "  MUSAN_NOISE_DIR=$MUSAN_NOISE_DIR  RIR_DIR=$RIR_DIR  COMPETING_PROB=$COMPETING_PROB"
 
 # ── 사전 점검 ──────────────────────────────────────────────
 [ -f "$DATA_DIR/test.jsonl" ] || { echo "❌ $DATA_DIR/test.jsonl 없음 (prepare_zeroth.py 먼저)"; exit 1; }
@@ -74,7 +77,7 @@ if [ -f "$BASELINE_MODEL/config.json" ]; then
         --output_dir "$RESULTS/baseline_before"
 fi
 
-# ── STEP 1: 증강 재학습 (꼬리 + long-form + 앱 일치 디코딩) ──
+# ── STEP 1: 증강 재학습 (꼬리 + long-form + 경쟁화자 + 앱 일치 디코딩) ──
 echo ""; echo "════════ STEP 1: 증강 재학습 ════════"
 # init_model: 성숙한 모델에서 이어서 학습(권장). INIT_MODEL=scratch 면 생짜에서.
 INIT_ARG=""
@@ -87,6 +90,7 @@ fi
 eval $PY finetune_whisper.py \
     --json_dir "$DATA_DIR" --apply_g2p \
     --p_tail 0.3 --longform_prob 0.3 --noise_only_prob "${NOISE_ONLY_PROB:-0.05}" \
+    --competing_prob "$COMPETING_PROB" \
     --batch_size 8 --grad_accum 2 \
     --output_dir "$OUT_DIR" $INIT_ARG $TRAIN_ARGS
 

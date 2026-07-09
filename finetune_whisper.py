@@ -366,6 +366,7 @@ def train(
     longform_prob=0.3,
     longform_max_sec=28.0,
     noise_only_prob=0.05,
+    competing_prob=0.0,
     repetition_penalty=1.0,
     no_repeat_ngram_size=0,
     init_model=None,
@@ -419,15 +420,27 @@ def train(
         return
 
     # ── 3. Dataset 생성 ──
-    # train 에만 원거리/소음 증강 적용. val/test 는 clean 으로 일반화 측정.
+    # train 에만 원거리/소음/경쟁화자 증강 적용. val/test 는 clean 으로 일반화 측정.
     augmentor = None
     if use_augment:
         from augment import FarFieldAugmentor
+        # 경쟁 화자(간섭원) 풀 = held-out test 스플릿 발화 (OpenSLR-40 train/test 화자 배타적).
+        # train 발화를 쓰지 않으므로 화자 단위 배타·라벨 무결성 요건 충족 (플랜 §7).
+        competing_files = []
+        if competing_prob > 0:
+            competing_files = [r["wav_path"] for r in splits.get("test", []) if r.get("wav_path")]
+            if not competing_files:
+                print("⚠️ 경쟁 화자 증강 요청됐으나 test 스플릿 발화가 없음 → 비활성화")
+            else:
+                print(f"🗣️ 경쟁 화자 증강: held-out(test) 간섭 풀 {len(competing_files):,}개, "
+                      f"p_competing={competing_prob}")
         augmentor = FarFieldAugmentor(
             noise_root=os.environ.get("MUSAN_NOISE_DIR", "/data/musan/noise"),
             rir_root=os.environ.get("RIR_DIR", "/data/RIRS_NOISES/simulated_rirs"),
             snr_db_range=(5.0, 20.0),
             p_tail=p_tail,                  # 비음성 꼬리 → 후반부 환각 억제
+            speech_files=competing_files,   # held-out 간섭 화자 (경쟁 화자 증강)
+            p_competing=competing_prob,
         )
     else:
         print("⚠️ 증강 비활성화 (--no_augment) — clean 학습")
@@ -569,6 +582,9 @@ if __name__ == "__main__":
                         help="long-form 목표 최대 길이(초)")
     parser.add_argument("--noise_only_prob", type=float, default=0.05,
                         help="순수 비음성→빈 라벨 샘플 비율 (noise-only 환각 억제). 과하면 조기 EOS 위험")
+    parser.add_argument("--competing_prob", type=float, default=0.0,
+                        help="경쟁 화자 증강 확률 (플랜 §7). held-out(test) 다른 화자를 타깃 우세 "
+                             "SIR 5~20dB(일부 0~5dB)로 부분 겹침 혼합. 라벨은 타깃만 유지. 0=비활성")
     parser.add_argument("--repetition_penalty", type=float, default=1.0,
                         help="기본 1.0=앱(WhisperKit) 일치. 1.2 등으로 anti-repeat crutch 사용 가능")
     parser.add_argument("--no_repeat_ngram_size", type=int, default=0,
@@ -593,6 +609,7 @@ if __name__ == "__main__":
         longform_prob=args.longform_prob,
         longform_max_sec=args.longform_max_sec,
         noise_only_prob=args.noise_only_prob,
+        competing_prob=args.competing_prob,
         repetition_penalty=args.repetition_penalty,
         no_repeat_ngram_size=args.no_repeat_ngram_size,
         init_model=args.init_model,
