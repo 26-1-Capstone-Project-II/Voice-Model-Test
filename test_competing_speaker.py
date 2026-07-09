@@ -111,9 +111,29 @@ def test_disabled_without_speech_files():
     print("✅ 3. 간섭 풀 없음 → 경쟁 화자 증강 자동 비활성(무개입)")
 
 
+def test_competing_own_rir_path():
+    """own_rir 경로: 타깃(RIR_a)·간섭(RIR_b) 각 별도 reverb, 공유 reverb 는 스킵(중복 없음)."""
+    aug = _make_augmentor(p_competing=1.0)
+    aug.rir_files = ["<rir>"]           # RIR 존재 상황 모사
+    aug.p_competing_own_rir = 1.0       # own_rir 강제
+    calls = {"n": 0}
+
+    def fake_reverb(x):
+        calls["n"] += 1
+        return (0.9 * np.asarray(x)).astype(np.float32)  # 방 감쇠 모사(길이 유지)
+
+    aug._reverberate = fake_reverb
+    target = (0.1 * rng.standard_normal(SR * 4)).astype(np.float32)
+    out = aug(target.copy())
+    assert out.shape == target.shape
+    assert calls["n"] == 2, f"reverb 호출 {calls['n']} != 2 (타깃/간섭 각 1회, 공유 reverb 스킵)"
+    print("✅ 4. own_rir 경로: 타깃·간섭 각 별도 RIR + 공유 reverb 스킵(중복 없음)")
+
+
 if __name__ == "__main__":
     test_label_integrity_target_preserved()
     test_call_returns_audio_only()
     test_sir_distribution()
     test_disabled_without_speech_files()
+    test_competing_own_rir_path()
     print("\n🎉 모든 경쟁 화자 증강 테스트 통과")

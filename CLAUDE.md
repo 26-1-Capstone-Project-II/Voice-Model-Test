@@ -35,7 +35,8 @@ On-Voice 앱의 화자 게이트(프론트엔드 방어)에 상보적인 **학�
 
 ```bash
 # 서버 원샷 (경쟁 화자 포함): 기본 COMPETING_PROB=0.3
-COMPETING_PROB=0.3 ./run_server_pipeline.sh
+# 옵션 COMPETING_OWN_RIR_PROB>0 → 간섭 화자를 타깃과 다른 RIR 로(공간 분리, 플랜 §7 옵션)
+COMPETING_PROB=0.3 COMPETING_OWN_RIR_PROB=0.0 ./run_server_pipeline.sh
 # 직접 호출
 python finetune_whisper.py --json_dir zeroth_dataset --apply_g2p --competing_prob 0.3 ...
 # 단위 테스트

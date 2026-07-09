@@ -39,6 +39,8 @@ export RIR_DIR="${RIR_DIR:-/data/RIRS_NOISES/simulated_rirs}"
 # 경쟁 화자 증강(플랜 §7): held-out(test) 다른 화자를 타깃 우세 SIR 로 부분 겹침 혼합.
 # 간섭 풀은 DATA_DIR/test.jsonl(train 과 화자 배타적). 0 이면 비활성.
 COMPETING_PROB="${COMPETING_PROB:-0.3}"
+# 간섭 화자 별도 RIR(공간 분리, 플랜 §7 옵션). 0=base(공유 방). RIR 없으면 자동 무시.
+COMPETING_OWN_RIR_PROB="${COMPETING_OWN_RIR_PROB:-0.0}"
 SMOKE="${SMOKE:-0}"
 
 PY="PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=$GPU python"
@@ -90,7 +92,7 @@ fi
 eval $PY finetune_whisper.py \
     --json_dir "$DATA_DIR" --apply_g2p \
     --p_tail 0.3 --longform_prob 0.3 --noise_only_prob "${NOISE_ONLY_PROB:-0.05}" \
-    --competing_prob "$COMPETING_PROB" \
+    --competing_prob "$COMPETING_PROB" --competing_own_rir_prob "$COMPETING_OWN_RIR_PROB" \
     --batch_size 8 --grad_accum 2 \
     --output_dir "$OUT_DIR" $INIT_ARG $TRAIN_ARGS
 

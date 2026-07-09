@@ -83,6 +83,7 @@ class FarFieldAugmentor:
         hard_sir_db_range=(0.0, 5.0),      # 근접 간섭 하드 케이스
         p_hard_sir=0.1,                    # 하드 케이스 비율
         competing_overlap_frac_range=(0.3, 0.85),  # 부분 겹침 비율 (1.0 미만 → full-overlap 없음)
+        p_competing_own_rir=0.0,           # 경쟁 시, 간섭 화자를 타깃과 *다른* RIR 로 (공간 분리)
         seed=None,
     ):
         self.noise_files = _load_wav_list(noise_root)
@@ -107,12 +108,14 @@ class FarFieldAugmentor:
         self.hard_sir_db_range = hard_sir_db_range
         self.p_hard_sir = p_hard_sir
         self.competing_overlap_frac_range = competing_overlap_frac_range
+        # 간섭 화자 별도 RIR 은 RIR 파일이 있어야만 의미 (없으면 0)
+        self.p_competing_own_rir = p_competing_own_rir if self.rir_files else 0.0
         if seed is not None:
             random.seed(seed)
         print(f"[Augmentor] noise={len(self.noise_files)} rir={len(self.rir_files)} "
               f"speech(competing)={len(self.speech_files)} "
               f"p_reverb={self.p_reverb} p_noise={self.p_noise} p_tail={self.p_tail} "
-              f"p_competing={self.p_competing}")
+              f"p_competing={self.p_competing} p_competing_own_rir={self.p_competing_own_rir}")
 
     def _reverberate(self, audio):
         rir = _load_audio(random.choice(self.rir_files))
@@ -134,12 +137,14 @@ class FarFieldAugmentor:
         scale = np.sqrt(clean_p / (10 ** (snr / 10)) / noise_p)
         return (audio + scale * noise).astype(np.float32)
 
-    def _add_competing_speech(self, audio):
+    def _add_competing_speech(self, audio, own_rir=False):
         """held-out 다른 화자 발화를 부분 겹침(onset/offset)으로 타깃 우세 SIR 로 섞는다.
 
         - 라벨은 건드리지 않는다(반환은 오디오만). 타깃 전사만 남긴다는 원칙(플랜 §1·§7).
         - 부분 겹침: 간섭원이 타깃 타임라인의 일부 구간만 덮는다(full-overlap 없음).
         - SIR 은 겹치는 구간의 파워로 정의 → "그 구간에서 타깃이 얼마나 우세한가".
+        - own_rir=True: 간섭 화자를 (타깃과 무관하게 새로 뽑은) 별도 RIR 로 울려 공간 분리
+          화자를 모사(플랜 §7 옵션). 이때 타깃은 호출부에서 이미 RIR_a 로 울린 상태여야 한다.
         """
         L = len(audio)
         if L == 0:
@@ -147,6 +152,10 @@ class FarFieldAugmentor:
         interferer = _load_audio(random.choice(self.speech_files))
         if len(interferer) == 0:
             return audio
+        if own_rir and self.rir_files:
+            interferer = self._reverberate(interferer)   # 간섭 화자 자기 방(RIR_b)
+            if len(interferer) == 0:
+                return audio
 
         # 부분 겹침 구간 길이·위치 (타깃 윈도우 안에 배치 → full-overlap 방지)
         frac = random.uniform(*self.competing_overlap_frac_range)
@@ -194,9 +203,19 @@ class FarFieldAugmentor:
 
     def __call__(self, audio):
         # 경쟁 화자를 먼저 섞고(두 화자가 함께 마이크로 향하는 원신호), 그 위에 방 울림·소음.
+        did_reverb = False
         if self.p_competing and random.random() < self.p_competing:
-            audio = self._add_competing_speech(audio)
-        if self.p_reverb and random.random() < self.p_reverb:
+            use_own_rir = (self.p_competing_own_rir > 0.0
+                           and random.random() < self.p_competing_own_rir)
+            if use_own_rir:
+                # 공간 분리: 타깃(RIR_a)·간섭(RIR_b)을 각기 다른 방으로 울린 뒤 마이크에서 합산.
+                audio = self._reverberate(audio)                        # 타깃 RIR_a
+                audio = self._add_competing_speech(audio, own_rir=True)  # 간섭 RIR_b (내부 적용)
+                did_reverb = True                                       # 아래 공유 reverb 스킵
+            else:
+                # base: 건식 혼합 → 아래 reverb 스테이지가 두 화자를 같은 방(공유 RIR)으로 울림.
+                audio = self._add_competing_speech(audio, own_rir=False)
+        if not did_reverb and self.p_reverb and random.random() < self.p_reverb:
             audio = self._reverberate(audio)
         if self.p_noise and random.random() < self.p_noise:
             audio = self._add_noise(audio)

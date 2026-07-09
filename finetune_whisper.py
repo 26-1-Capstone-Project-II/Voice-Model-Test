@@ -367,6 +367,7 @@ def train(
     longform_max_sec=28.0,
     noise_only_prob=0.05,
     competing_prob=0.0,
+    competing_own_rir_prob=0.0,
     repetition_penalty=1.0,
     no_repeat_ngram_size=0,
     init_model=None,
@@ -441,6 +442,7 @@ def train(
             p_tail=p_tail,                  # 비음성 꼬리 → 후반부 환각 억제
             speech_files=competing_files,   # held-out 간섭 화자 (경쟁 화자 증강)
             p_competing=competing_prob,
+            p_competing_own_rir=competing_own_rir_prob,  # 간섭 화자 별도 RIR(공간 분리, 플랜 §7 옵션)
         )
     else:
         print("⚠️ 증강 비활성화 (--no_augment) — clean 학습")
@@ -585,6 +587,9 @@ if __name__ == "__main__":
     parser.add_argument("--competing_prob", type=float, default=0.0,
                         help="경쟁 화자 증강 확률 (플랜 §7). held-out(test) 다른 화자를 타깃 우세 "
                              "SIR 5~20dB(일부 0~5dB)로 부분 겹침 혼합. 라벨은 타깃만 유지. 0=비활성")
+    parser.add_argument("--competing_own_rir_prob", type=float, default=0.0,
+                        help="경쟁 시 간섭 화자를 타깃과 다른 RIR 로 울려 공간 분리 화자 모사 "
+                             "(플랜 §7 옵션). RIR 없으면 자동 무시. 0=base(공유 방)")
     parser.add_argument("--repetition_penalty", type=float, default=1.0,
                         help="기본 1.0=앱(WhisperKit) 일치. 1.2 등으로 anti-repeat crutch 사용 가능")
     parser.add_argument("--no_repeat_ngram_size", type=int, default=0,
@@ -610,6 +615,7 @@ if __name__ == "__main__":
         longform_max_sec=args.longform_max_sec,
         noise_only_prob=args.noise_only_prob,
         competing_prob=args.competing_prob,
+        competing_own_rir_prob=args.competing_own_rir_prob,
         repetition_penalty=args.repetition_penalty,
         no_repeat_ngram_size=args.no_repeat_ngram_size,
         init_model=args.init_model,
