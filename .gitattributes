@@ -3,3 +3,4 @@
 *.weightbin filter=lfs diff=lfs merge=lfs -text
 *.mil filter=lfs diff=lfs merge=lfs -text
 *.mlmodelc/* filter=lfs diff=lfs merge=lfs -text
+best_model_whisper/** filter=lfs diff=lfs merge=lfs -text
