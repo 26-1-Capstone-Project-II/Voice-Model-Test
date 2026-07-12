@@ -84,6 +84,15 @@ class FarFieldAugmentor:
         p_hard_sir=0.1,                    # 하드 케이스 비율
         competing_overlap_frac_range=(0.3, 0.85),  # 부분 겹침 비율 (1.0 미만 → full-overlap 없음)
         p_competing_own_rir=0.0,           # 경쟁 시, 간섭 화자를 타깃과 *다른* RIR 로 (공간 분리)
+        # ── 웅성거림(babble) 증강: 다수 held-out 화자 합성 배경 (쇼핑몰/재생음 조건) ──
+        # 경쟁 화자(1인·부분 겹침)와 달리 여러 화자를 등파워 합산해 확산 배경 소음으로
+        # 전 구간에 깐다. MUSAN speech 는 라벨 부재·도메인 불일치로 금지이므로(원칙),
+        # babble 도 동일한 held-out speech_files 풀에서 합성한다 → 라벨 무결성 유지.
+        p_babble=0.0,
+        babble_speakers_range=(3, 7),      # 합성 화자 수 (K명 등파워 합산)
+        babble_snr_db_range=(0.0, 15.0),   # 타깃 − babble SNR (확산 배경이라 SIR 아님)
+        hard_babble_snr_db_range=(-5.0, 0.0),  # babble 이 타깃보다 큰 극한(재생음 인접) 케이스
+        p_hard_babble=0.1,
         seed=None,
     ):
         self.noise_files = _load_wav_list(noise_root)
@@ -110,12 +119,19 @@ class FarFieldAugmentor:
         self.competing_overlap_frac_range = competing_overlap_frac_range
         # 간섭 화자 별도 RIR 은 RIR 파일이 있어야만 의미 (없으면 0)
         self.p_competing_own_rir = p_competing_own_rir if self.rir_files else 0.0
+        # babble 은 최소 화자 수만큼 소스가 있어야만 활성 (없으면 자동 비활성).
+        self.babble_speakers_range = babble_speakers_range
+        self.p_babble = p_babble if len(self.speech_files) >= babble_speakers_range[0] else 0.0
+        self.babble_snr_db_range = babble_snr_db_range
+        self.hard_babble_snr_db_range = hard_babble_snr_db_range
+        self.p_hard_babble = p_hard_babble
         if seed is not None:
             random.seed(seed)
         print(f"[Augmentor] noise={len(self.noise_files)} rir={len(self.rir_files)} "
               f"speech(competing)={len(self.speech_files)} "
               f"p_reverb={self.p_reverb} p_noise={self.p_noise} p_tail={self.p_tail} "
-              f"p_competing={self.p_competing} p_competing_own_rir={self.p_competing_own_rir}")
+              f"p_competing={self.p_competing} p_competing_own_rir={self.p_competing_own_rir} "
+              f"p_babble={self.p_babble}")
 
     def _reverberate(self, audio):
         rir = _load_audio(random.choice(self.rir_files))
@@ -178,6 +194,42 @@ class FarFieldAugmentor:
         mixed[start:start + seg_len] = tgt_region + scale * interf_seg
         return mixed.astype(np.float32)
 
+    def _make_babble(self, length):
+        """held-out 화자 K명을 등파워로 합산한 웅성거림(babble) 배경을 만든다.
+
+        화자별 파워를 정규화해 특정 한 명이 지배하지 않게 한다 — 지배 화자가 생기면
+        경쟁 화자(1인) 케이스와 같아져 babble 의 목적(비정형 다수 화자 배경)이 흐려진다.
+        """
+        k_lo, k_hi = self.babble_speakers_range
+        k = random.randint(k_lo, min(k_hi, len(self.speech_files)))
+        bed = np.zeros(length, dtype=np.float32)
+        for path in random.sample(self.speech_files, k):
+            src = _match_length(_load_audio(path), length)
+            src_p = float(np.mean(src ** 2)) + 1e-8
+            bed += src / np.sqrt(src_p)
+        return bed
+
+    def _add_babble(self, audio):
+        """다수 held-out 화자 합성 웅성거림을 **전 구간** 배경으로 섞는다.
+
+        쇼핑몰 웅성거림·TV/영상 재생음 같은 확산 speech-like 배경을 모사한다(실기기
+        테스트에서 확인된 갭). 경쟁 화자 증강(1인·부분 겹침·타깃 우세 SIR)과 달리
+        여기서는 배경 소음으로 취급해 창 전체를 덮는다. MUSAN speech 는 금지이므로
+        같은 held-out 풀에서 합성한다. 라벨은 건드리지 않는다(오디오만 반환).
+        """
+        L = len(audio)
+        if L == 0 or len(self.speech_files) < self.babble_speakers_range[0]:
+            return audio
+        babble = self._make_babble(L)
+        if random.random() < self.p_hard_babble:
+            snr = random.uniform(*self.hard_babble_snr_db_range)
+        else:
+            snr = random.uniform(*self.babble_snr_db_range)
+        tgt_p = float(np.mean(audio ** 2)) + 1e-8
+        bab_p = float(np.mean(babble ** 2)) + 1e-8
+        scale = np.sqrt(tgt_p / (10 ** (snr / 10)) / bab_p)
+        return (audio + scale * babble).astype(np.float32)
+
     def _apply_gain(self, audio):
         gain_db = random.uniform(*self.gain_db_range)
         return (audio * (10 ** (gain_db / 20))).astype(np.float32)
@@ -217,6 +269,10 @@ class FarFieldAugmentor:
                 audio = self._add_competing_speech(audio, own_rir=False)
         if not did_reverb and self.p_reverb and random.random() < self.p_reverb:
             audio = self._reverberate(audio)
+        # babble 은 확산 배경이라 (경쟁 화자와 달리) 방 울림 이후, MUSAN 과 같은
+        # "마이크에서 더해지는 소음" 슬롯에 넣는다 — 고정 순서(§7) 유지.
+        if self.p_babble and random.random() < self.p_babble:
+            audio = self._add_babble(audio)
         if self.p_noise and random.random() < self.p_noise:
             audio = self._add_noise(audio)
         if random.random() < self.p_gain:

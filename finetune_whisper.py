@@ -368,6 +368,7 @@ def train(
     noise_only_prob=0.05,
     competing_prob=0.0,
     competing_own_rir_prob=0.0,
+    babble_prob=0.0,
     repetition_penalty=1.0,
     no_repeat_ngram_size=0,
     init_model=None,
@@ -428,13 +429,13 @@ def train(
         # 경쟁 화자(간섭원) 풀 = held-out test 스플릿 발화 (OpenSLR-40 train/test 화자 배타적).
         # train 발화를 쓰지 않으므로 화자 단위 배타·라벨 무결성 요건 충족 (플랜 §7).
         competing_files = []
-        if competing_prob > 0:
+        if competing_prob > 0 or babble_prob > 0:
             competing_files = [r["wav_path"] for r in splits.get("test", []) if r.get("wav_path")]
             if not competing_files:
                 print("⚠️ 경쟁 화자 증강 요청됐으나 test 스플릿 발화가 없음 → 비활성화")
             else:
                 print(f"🗣️ 경쟁 화자 증강: held-out(test) 간섭 풀 {len(competing_files):,}개, "
-                      f"p_competing={competing_prob}")
+                      f"p_competing={competing_prob}, p_babble={babble_prob}")
         augmentor = FarFieldAugmentor(
             noise_root=os.environ.get("MUSAN_NOISE_DIR", "/data/musan/noise"),
             rir_root=os.environ.get("RIR_DIR", "/data/RIRS_NOISES/simulated_rirs"),
@@ -443,6 +444,7 @@ def train(
             speech_files=competing_files,   # held-out 간섭 화자 (경쟁 화자 증강)
             p_competing=competing_prob,
             p_competing_own_rir=competing_own_rir_prob,  # 간섭 화자 별도 RIR(공간 분리, 플랜 §7 옵션)
+            p_babble=babble_prob,           # 다수 held-out 화자 웅성거림 배경 (쇼핑몰/재생음 조건)
         )
     else:
         print("⚠️ 증강 비활성화 (--no_augment) — clean 학습")
@@ -590,6 +592,10 @@ if __name__ == "__main__":
     parser.add_argument("--competing_own_rir_prob", type=float, default=0.0,
                         help="경쟁 시 간섭 화자를 타깃과 다른 RIR 로 울려 공간 분리 화자 모사 "
                              "(플랜 §7 옵션). RIR 없으면 자동 무시. 0=base(공유 방)")
+    parser.add_argument("--babble_prob", type=float, default=0.0,
+                        help="웅성거림(babble) 증강 확률. held-out(test) 화자 3~7명을 등파워 "
+                             "합산한 배경을 SNR 0~15dB(일부 -5~0dB 하드)로 전 구간 혼합 — "
+                             "쇼핑몰/영상 재생음 조건(실기기 확인 갭). 라벨은 타깃만 유지. 0=비활성")
     parser.add_argument("--repetition_penalty", type=float, default=1.0,
                         help="기본 1.0=앱(WhisperKit) 일치. 1.2 등으로 anti-repeat crutch 사용 가능")
     parser.add_argument("--no_repeat_ngram_size", type=int, default=0,
@@ -616,6 +622,7 @@ if __name__ == "__main__":
         noise_only_prob=args.noise_only_prob,
         competing_prob=args.competing_prob,
         competing_own_rir_prob=args.competing_own_rir_prob,
+        babble_prob=args.babble_prob,
         repetition_penalty=args.repetition_penalty,
         no_repeat_ngram_size=args.no_repeat_ngram_size,
         init_model=args.init_model,

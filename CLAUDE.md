@@ -34,25 +34,35 @@ On-Voice 앱의 화자 게이트(프론트엔드 방어)에 상보적인 **학�
 ### 실행
 
 ```bash
-# 서버 원샷 (경쟁 화자 포함): 기본 COMPETING_PROB=0.3
+# 서버 원샷 (경쟁 화자 + babble 포함): 기본 COMPETING_PROB=0.3, BABBLE_PROB=0.3
 # 옵션 COMPETING_OWN_RIR_PROB>0 → 간섭 화자를 타깃과 다른 RIR 로(공간 분리, 플랜 §7 옵션)
-COMPETING_PROB=0.3 COMPETING_OWN_RIR_PROB=0.0 ./run_server_pipeline.sh
+COMPETING_PROB=0.3 BABBLE_PROB=0.3 ./run_server_pipeline.sh
 # 직접 호출
-python finetune_whisper.py --json_dir zeroth_dataset --apply_g2p --competing_prob 0.3 ...
+python finetune_whisper.py --json_dir zeroth_dataset --apply_g2p \
+    --competing_prob 0.3 --babble_prob 0.3 ...
 # 단위 테스트
-python test_competing_speaker.py
+python test_competing_speaker.py && python test_babble.py
 
-# §9 다화자 평가 (재학습 전후 대조): comp_sir* 조건 + 자모 손실 오류율(JER)
+# §9 다화자 평가 (재학습 전후 대조): comp_sir*/babble_snr* 조건 + 자모 손실 오류율(JER)
 python diagnose_farfield_baseline.py --model_path best_model_whisper/best \
     --json_dir zeroth_dataset --apply_g2p --num_samples 200 \
-    --competing_sir_list 0,5,10,15,20 --competing_overlaps 0.5,1.0
+    --competing_sir_list 0,5,10,15,20 --competing_overlaps 0.5,1.0 \
+    --babble_snr_list 0,5,10
 ```
 
-### 필수 테스트 (`test_competing_speaker.py`)
+### babble(웅성거림) 증강 — 경쟁 화자와의 구분
 
-- 라벨 무결성: 경쟁 믹싱이 타깃을 제거/치환하지 않고 더하기만 함(겹침 밖 바이트 동일)
-- SIR 분포: 복원 SIR 이 설정 범위 안 + 하드(<5dB) 비율이 p_hard_sir 에 수렴
-- full-overlap 없음 / 간섭 풀 없으면 자동 비활성
+실기기 테스트(쇼핑몰·영상 재생음)에서 확인된 갭 대응. 경쟁 화자(1인·부분 겹침·
+타깃 우세 SIR)와 달리, **held-out 화자 3~7명을 등파워 합산**한 확산 배경을 SNR
+0~15dB(일부 -5~0dB 하드)로 **전 구간**에 깐다. MUSAN speech 금지 원칙은 유지 —
+babble 도 같은 held-out(test) 풀에서 합성하므로 라벨 무결성이 자동 보장된다.
+
+### 필수 테스트 (`test_competing_speaker.py`, `test_babble.py`)
+
+- 라벨 무결성: 믹싱이 타깃을 제거/치환하지 않고 더하기만 함(경쟁: 겹침 밖 바이트 동일)
+- SIR/SNR 분포: 복원 값이 설정 범위 안 + 하드 비율이 p_hard_* 에 수렴
+- 경쟁: full-overlap 없음 / babble: 화자 수 K 가 범위 안
+- 소스 풀 부족 시 자동 비활성(무개입)
 
 ### 컨벤션
 

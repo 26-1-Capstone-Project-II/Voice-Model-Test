@@ -41,6 +41,9 @@ export RIR_DIR="${RIR_DIR:-/data/RIRS_NOISES/simulated_rirs}"
 COMPETING_PROB="${COMPETING_PROB:-0.3}"
 # 간섭 화자 별도 RIR(공간 분리, 플랜 §7 옵션). 0=base(공유 방). RIR 없으면 자동 무시.
 COMPETING_OWN_RIR_PROB="${COMPETING_OWN_RIR_PROB:-0.0}"
+# 웅성거림(babble) 증강: held-out(test) 화자 3~7명 등파워 합산 배경을 SNR 0~15dB
+# (일부 -5~0dB 하드)로 전 구간 혼합 — 쇼핑몰/영상 재생음 조건. 0 이면 비활성.
+BABBLE_PROB="${BABBLE_PROB:-0.3}"
 SMOKE="${SMOKE:-0}"
 
 PY="PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=$GPU python"
@@ -93,6 +96,7 @@ eval $PY finetune_whisper.py \
     --json_dir "$DATA_DIR" --apply_g2p \
     --p_tail 0.3 --longform_prob 0.3 --noise_only_prob "${NOISE_ONLY_PROB:-0.05}" \
     --competing_prob "$COMPETING_PROB" --competing_own_rir_prob "$COMPETING_OWN_RIR_PROB" \
+    --babble_prob "$BABBLE_PROB" \
     --batch_size 8 --grad_accum 2 \
     --output_dir "$OUT_DIR" $INIT_ARG $TRAIN_ARGS
 

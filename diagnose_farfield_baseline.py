@@ -305,6 +305,31 @@ def mix_competing(target, interferer, *, sir_db, overlap_frac):
     return out.astype(np.float32)
 
 
+def mix_babble(target, sources, *, snr_db):
+    """평가용 결정적 babble 혼합 (학습 augment._add_babble 과 동일 규약, 무작위성 제거).
+
+    - sources(K명 held-out 발화)를 각자 등파워 정규화해 합산한 배경을 전 구간에 더한다.
+    - SNR 은 전체 구간 파워로 정의(타깃 vs babble).
+    """
+    target = target.astype(np.float32)
+    L = len(target)
+    if L == 0 or not sources:
+        return target
+    bed = np.zeros(L, dtype=np.float32)
+    for src in sources:
+        seg = _fit_len(src.astype(np.float32), L)
+        src_p = float(np.mean(seg ** 2)) + 1e-8
+        bed += seg / np.sqrt(src_p)
+    tgt_p = float(np.mean(target ** 2)) + 1e-8
+    bab_p = float(np.mean(bed ** 2)) + 1e-8
+    scale = np.sqrt(tgt_p / (10 ** (snr_db / 10)) / bab_p)
+    out = target + scale * bed
+    peak = float(np.max(np.abs(out))) if len(out) else 0.0
+    if peak > 0.99:
+        out = out * (0.99 / peak)
+    return out.astype(np.float32)
+
+
 def append_noise_tail(aug, audio, tail_sec, snr_db=10.0, total_sec=MAX_AUDIO_SEC):
     """
     음성 뒤에 비음성(노이즈) 꼬리를 붙여 '말 끝난 뒤 윈도우 잔여 구간' 재현.
@@ -332,7 +357,8 @@ def append_noise_tail(aug, audio, tail_sec, snr_db=10.0, total_sec=MAX_AUDIO_SEC
 # ────────────────────────────────────────────
 # 5. 조건 정의 & 실행
 # ────────────────────────────────────────────
-def make_conditions(snr_list, tail_sec, competing_sir_list=None, competing_overlaps=None):
+def make_conditions(snr_list, tail_sec, competing_sir_list=None, competing_overlaps=None,
+                    babble_snr_list=None, babble_k=5):
     conds = [{"name": "clean", "reverb": False, "snr": None, "tail": 0.0}]
     conds.append({"name": "reverb", "reverb": True, "snr": None, "tail": 0.0})
     for snr in snr_list:
@@ -351,12 +377,21 @@ def make_conditions(snr_list, tail_sec, competing_sir_list=None, competing_overl
                 "reverb": False, "snr": None, "tail": 0.0,
                 "competing": {"sir": float(sir), "overlap": float(ov)},
             })
+    # babble(다수 화자 웅성거림) 조건: held-out K명 등파워 합산 배경을 전 구간 SNR 로 혼합
+    # (쇼핑몰/영상 재생음 조건 — 실기기 확인 갭. 학습 augment 의 _add_babble 과 동일 규약)
+    for snr in (babble_snr_list or []):
+        conds.append({
+            "name": f"babble_snr{int(snr)}",
+            "reverb": False, "snr": None, "tail": 0.0,
+            "babble": {"snr": float(snr), "k": int(babble_k)},
+        })
     return conds
 
 
 def run_condition(decoder, aug, records, cond, pair=None):
     rows = []
     comp = cond.get("competing")
+    bab = cond.get("babble")
     for i, rec in enumerate(records):
         audio, _ = librosa.load(rec["wav_path"], sr=TARGET_SR, mono=True)
         audio = audio[: int(MAX_SRC_SEC * TARGET_SR)]
@@ -365,6 +400,13 @@ def run_condition(decoder, aug, records, cond, pair=None):
             j = pair[i] if pair is not None else (i + len(records) // 2) % max(1, len(records))
             interf, _ = librosa.load(records[j]["wav_path"], sr=TARGET_SR, mono=True)
             a = mix_competing(audio, interf, sir_db=comp["sir"], overlap_frac=comp["overlap"])
+        elif bab is not None:
+            # babble 소스 = 자기 자신을 제외한 K개 발화 (결정적 선택 — 재현성)
+            k = bab["k"]
+            idxs = [(i + 1 + t) % len(records) for t in range(k)]
+            srcs = [librosa.load(records[j]["wav_path"], sr=TARGET_SR, mono=True)[0]
+                    for j in idxs if j != i]
+            a = mix_babble(audio, srcs, snr_db=bab["snr"])
         else:
             a = degrade(aug, audio, reverb=cond["reverb"], snr_db=cond["snr"])
             if cond["tail"] > 0:
@@ -438,6 +480,11 @@ def main():
     ap.add_argument("--competing_overlaps", default="0.5",
                     help="경쟁 화자 겹침 비율 목록(<1 부분, >=1 완전). 예: 0.5,1.0")
     ap.add_argument("--no_competing", action="store_true", help="경쟁 화자(다화자) 조건 비활성")
+    ap.add_argument("--babble_snr_list", default="0,5,10",
+                    help="babble(다수 화자 웅성거림) 조건의 타깃 SNR(dB) 목록. 빈 값이면 생략")
+    ap.add_argument("--babble_speakers", type=int, default=5,
+                    help="babble 합성에 쓸 held-out 화자 수 K (등파워 합산)")
+    ap.add_argument("--no_babble", action="store_true", help="babble 조건 비활성")
     ap.add_argument("--no_neutral", action="store_true", help="학습 config 그대로(anti-repeat 유지)")
     ap.add_argument("--allow_eot", action="store_true",
                     help="진단: begin_suppress 에서 EOS 제거 → 첫 토큰 EOS 허용(비음성→빈 출력 가능). "
@@ -452,6 +499,8 @@ def main():
     competing_sir_list = [] if args.no_competing else \
         [float(x) for x in args.competing_sir_list.split(",") if x.strip() != ""]
     competing_overlaps = [float(x) for x in args.competing_overlaps.split(",") if x.strip() != ""]
+    babble_snr_list = [] if args.no_babble else \
+        [float(x) for x in args.babble_snr_list.split(",") if x.strip() != ""]
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -466,7 +515,12 @@ def main():
         print("  ⚠️ 레코드가 1개 이하 → 경쟁 화자 조건 생략")
         competing_sir_list = []
 
-    conditions = make_conditions(snr_list, args.tail_sec, competing_sir_list, competing_overlaps)
+    if babble_snr_list and N <= args.babble_speakers:
+        print(f"  ⚠️ 레코드가 {args.babble_speakers}개 이하 → babble 조건 생략")
+        babble_snr_list = []
+
+    conditions = make_conditions(snr_list, args.tail_sec, competing_sir_list, competing_overlaps,
+                                 babble_snr_list=babble_snr_list, babble_k=args.babble_speakers)
     results = {"config": vars(args), "conditions": {}}
 
     print(f"\n{'='*72}\n  베이스라인 측정 시작 — {len(records)}개 × {len(conditions)}조건\n{'='*72}")
