@@ -27,6 +27,8 @@ On-Voice 앱의 화자 게이트(프론트엔드 방어)에 상보적인 **학�
 - **모델 전체성:** 프로덕션 모델은 `openai/whisper-base` **full fine-tuning**
   (whisper-tiny 아님, LoRA 아님 — README 구버전 기재에 의지 말 것. **코드가 진실**).
 - **평가:** 다화자 조건 자모/문자 손실 오류율 + 깨끗한 발화 절대 무회귀. **DER 사용 금지.**
+  재학습마다 **noise-only 환각 시 avgLogProb 를 앱 confidenceFloor(-0.8)와 대조**해 마진 기록
+  (환각 확신도는 재학습마다 움직임 — `docs/phase0-findings.md` §5).
 - **하드코딩 금지:** 확률·SIR·임계값은 생성자 인자/CLI/env(`COMPETING_PROB`)로 분리.
 - 재학습 후 macOS 에서 `./convert_to_coreml.sh` (coremltools) → WhisperKit CoreML 교체,
   가중치는 Git LFS.

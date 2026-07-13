@@ -59,3 +59,21 @@ clean → (p_reverb) reverb[RIR] → (p_noise) +noise[MUSAN]@SNR → (p_gain) ga
 - 브랜치 컨벤션: 플랜 §11 → `feat/competing-speaker-aug`. 현재 브랜치 `whisper-base-zeroth`.
 - 재학습은 성숙 모델에서 이어서(`--init_model best_model_zeroth_aug/best`, 낮은 LR)가 기존 관례.
 - 재학습 후 macOS에서 `./convert_to_coreml.sh` → WhisperKit CoreML 교체(가중치 Git LFS).
+
+## 5. 재학습 후 발견 — noise-only 환각 확신도 상승과 앱 게이트 마진 (2026-07-13)
+
+경쟁 화자+babble 결합 재학습(457 평가, `results/full2_*`)에서 확인:
+
+- **noise-only 순수 환각률은 98%로 동일**하나, **환각 시 avgLogProb 가 -1.17 → -0.87 로
+  상승**(확신도 증가). 앱 신뢰도 게이트 임계값 `confidenceFloor = -0.8`
+  (On-Voice `SpeechAnalysisService.swift`) 대비 마진이 0.37 → **0.07** 로 얇아짐 —
+  순수 소음 환각이 게이트에 "겨우 걸리는" 수준.
+- 블로커 아님: 실사용 조건(발화+배경)의 babble 환각률은 41.8%→7.0%로 대폭 개선,
+  순수 무발화 녹음은 드묾. 단 앱 측 게이트 임계값 재튜닝(예정된 실기기 측정)에서
+  이 값을 반드시 반영할 것.
+- **재학습 릴리스 지표로 승격:** 환각 확신도는 학습 분포가 바꾸는 값이라 재학습마다
+  움직인다. 이후 모든 재학습에서 `diagnose_farfield_baseline.py` 의
+  "noise-only 환각 시 avgLogProb" 를 앱 `confidenceFloor` 와 대조해 마진을 기록할 것.
+- 근본 대응은 학습이 아니라 디코딩: begin_suppress EOS 해제(`--allow_eot` 진단 참고)
+  / suppressBlank 계열 — noise-only 환각은 디코딩(첫 토큰 EOS 금지)이 강제하는 구조적
+  문제로 이미 확인됨.
