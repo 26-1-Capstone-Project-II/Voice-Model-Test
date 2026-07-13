@@ -173,25 +173,88 @@ def load_data(json_dir, max_samples=0, apply_g2p=False):
 # 4. Dataset
 # ────────────────────────────────────────────
 class WhisperPhoneticDataset(torch.utils.data.Dataset):
-    """Whisper 입력용 Dataset: 오디오 → mel spectrogram, 라벨 → token IDs."""
+    """Whisper 입력용 Dataset: 오디오 → mel spectrogram, 라벨 → token IDs.
 
-    def __init__(self, records, processor, augmentor=None):
+    long-form: train 에서 일부 샘플을 여러 발화로 이어붙여 ~30초 연속 발화를 만든다.
+    Zeroth 는 짧은 낭독 세그먼트뿐이라, 모델이 30초 윈도우 후반부를 학습한 적이 없어
+    그곳에서 환각이 발생한다. 이어붙이기로 후반부 분포를 직접 채운다.
+    """
+
+    def __init__(self, records, processor, augmentor=None,
+                 longform_prob=0.0, longform_max_sec=28.0, longform_max_chars=180,
+                 noise_only_prob=0.0):
         self.records = records
         self.processor = processor
         self.augmentor = augmentor          # train split 에서만 전달 (val/test=None)
+        self.longform_prob = longform_prob
+        self.longform_max_sec = longform_max_sec
+        self.longform_max_chars = longform_max_chars
+        # 순수 비음성(노이즈/무음) → 빈 라벨 비율. "비음성 = 출력 없음(EOS)" 학습으로
+        # noise-only 환각을 근본 억제. 과하면 실제 발화를 조기 EOS 할 수 있어 낮게 유지.
+        self.noise_only_prob = noise_only_prob
 
     def __len__(self):
         return len(self.records)
 
-    def __getitem__(self, idx):
-        rec = self.records[idx]
-
-        # 오디오 로드
+    def _load(self, rec):
         try:
             audio, _ = librosa.load(rec["wav_path"], sr=TARGET_SR, mono=True)
         except Exception:
-            # 로드 실패 시 1초 무음 반환
-            audio = np.zeros(TARGET_SR, dtype=np.float32)
+            audio = np.zeros(TARGET_SR, dtype=np.float32)   # 로드 실패 시 1초 무음
+        return audio.astype(np.float32)
+
+    def _make_noise_only(self):
+        """순수 비음성 클립 생성 (노이즈/무음, 라벨 없음). 노이즈 파일 없으면 None."""
+        import random
+        if not (self.augmentor is not None and self.augmentor.noise_files):
+            return None
+        from augment import _load_audio, _match_length
+        sec = random.uniform(3.0, 20.0)
+        length = int(sec * TARGET_SR)
+        noise = _match_length(_load_audio(random.choice(self.augmentor.noise_files)), length)
+        peak = float(np.max(np.abs(noise))) + 1e-8
+        noise = (random.uniform(0.05, 0.5) * noise / peak).astype(np.float32)  # 레벨 다양화
+        if self.augmentor.rir_files and random.random() < 0.3:
+            noise = self.augmentor._reverberate(noise)               # 잔향 섞인 비음성도
+        return noise
+
+    def _build_longform(self, idx):
+        """idx 부터 연속 발화를 이어붙여 (audio, label) 생성. 발화 사이 짧은 무음 삽입."""
+        import random
+        target_sec = random.uniform(15.0, self.longform_max_sec)
+        audios, labels, total_sec, n = [], [], 0.0, len(self.records)
+        for k in range(8):                                  # 최대 8개까지 결합
+            rec = self.records[(idx + k) % n]
+            a = self._load(rec)
+            audios.append(a)
+            labels.append(rec["label"])
+            total_sec += len(a) / TARGET_SR
+            if k < 7:
+                gap = np.zeros(int(random.uniform(0.1, 0.3) * TARGET_SR), dtype=np.float32)
+                audios.append(gap)
+                total_sec += len(gap) / TARGET_SR
+            joined_chars = sum(len(l) for l in labels)
+            if total_sec >= target_sec or joined_chars >= self.longform_max_chars:
+                break
+        audio = np.concatenate(audios).astype(np.float32)
+        label = " ".join(labels)
+        return audio, label
+
+    def __getitem__(self, idx):
+        import random
+        rec = self.records[idx]
+
+        # 순수 비음성 → 빈 라벨 (train 전용). augmentor 가 추가 열화하지 않도록 별도 분기.
+        noise_only = None
+        if self.noise_only_prob > 0 and random.random() < self.noise_only_prob:
+            noise_only = self._make_noise_only()
+
+        if noise_only is not None:
+            audio, label = noise_only, ""
+        elif self.longform_prob > 0 and random.random() < self.longform_prob:
+            audio, label = self._build_longform(idx)      # long-form 결합
+        else:
+            audio, label = self._load(rec), rec["label"]  # 단일 발화
 
         # 30초 이하로 자르기 (Whisper 윈도우)
         max_samples = 30 * TARGET_SR
@@ -199,7 +262,8 @@ class WhisperPhoneticDataset(torch.utils.data.Dataset):
             audio = audio[:max_samples]
 
         # 원거리/소음 증강 (feature extractor 이전, 파형 도메인 / train 전용)
-        if self.augmentor is not None:
+        # 비음성 클립은 이미 노이즈이므로 추가 증강을 건너뛴다.
+        if self.augmentor is not None and noise_only is None:
             audio = self.augmentor(audio)
 
         # Log-mel spectrogram (Whisper feature extractor)
@@ -208,7 +272,7 @@ class WhisperPhoneticDataset(torch.utils.data.Dataset):
         ).input_features[0]
 
         # 라벨 토큰화 (발음 전사 텍스트)
-        labels = self.processor.tokenizer(rec["label"]).input_ids
+        labels = self.processor.tokenizer(label).input_ids
 
         return {
             "input_features": input_features,
@@ -298,6 +362,16 @@ def train(
     apply_g2p=False,
     dry_run=False,
     use_augment=True,
+    p_tail=0.3,
+    longform_prob=0.3,
+    longform_max_sec=28.0,
+    noise_only_prob=0.05,
+    competing_prob=0.0,
+    competing_own_rir_prob=0.0,
+    babble_prob=0.0,
+    repetition_penalty=1.0,
+    no_repeat_ngram_size=0,
+    init_model=None,
 ):
     # Lazy imports (PEFT 버전 충돌 방지)
     from transformers import (
@@ -311,10 +385,15 @@ def train(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # 초기 가중치: init_model 이 주어지면 그 체크포인트에서 *이어서* 학습한다.
+    # (성숙한 best_model_zeroth_aug/best 에 새 증강만 얹어 깨끗한 정확도 보존)
+    # 없으면 생짜 BASE_MODEL 에서 처음부터 학습.
+    src_model = init_model or BASE_MODEL
+
     # ── 1. Processor 로드 ──
-    print(f"\n📥 Processor 로드: {BASE_MODEL}")
+    print(f"\n📥 Processor 로드: {src_model}")
     processor = WhisperProcessor.from_pretrained(
-        BASE_MODEL, language="ko", task="transcribe"
+        src_model, language="ko", task="transcribe"
     )
 
     # ── 2. 데이터 로드 ──
@@ -343,24 +422,44 @@ def train(
         return
 
     # ── 3. Dataset 생성 ──
-    # train 에만 원거리/소음 증강 적용. val/test 는 clean 으로 일반화 측정.
+    # train 에만 원거리/소음/경쟁화자 증강 적용. val/test 는 clean 으로 일반화 측정.
     augmentor = None
     if use_augment:
         from augment import FarFieldAugmentor
+        # 경쟁 화자(간섭원) 풀 = held-out test 스플릿 발화 (OpenSLR-40 train/test 화자 배타적).
+        # train 발화를 쓰지 않으므로 화자 단위 배타·라벨 무결성 요건 충족 (플랜 §7).
+        competing_files = []
+        if competing_prob > 0 or babble_prob > 0:
+            competing_files = [r["wav_path"] for r in splits.get("test", []) if r.get("wav_path")]
+            if not competing_files:
+                print("⚠️ 경쟁 화자 증강 요청됐으나 test 스플릿 발화가 없음 → 비활성화")
+            else:
+                print(f"🗣️ 경쟁 화자 증강: held-out(test) 간섭 풀 {len(competing_files):,}개, "
+                      f"p_competing={competing_prob}, p_babble={babble_prob}")
         augmentor = FarFieldAugmentor(
             noise_root=os.environ.get("MUSAN_NOISE_DIR", "/data/musan/noise"),
             rir_root=os.environ.get("RIR_DIR", "/data/RIRS_NOISES/simulated_rirs"),
             snr_db_range=(5.0, 20.0),
+            p_tail=p_tail,                  # 비음성 꼬리 → 후반부 환각 억제
+            speech_files=competing_files,   # held-out 간섭 화자 (경쟁 화자 증강)
+            p_competing=competing_prob,
+            p_competing_own_rir=competing_own_rir_prob,  # 간섭 화자 별도 RIR(공간 분리, 플랜 §7 옵션)
+            p_babble=babble_prob,           # 다수 held-out 화자 웅성거림 배경 (쇼핑몰/재생음 조건)
         )
     else:
         print("⚠️ 증강 비활성화 (--no_augment) — clean 학습")
-    train_ds = WhisperPhoneticDataset(splits["train"], processor, augmentor=augmentor)
+    # train 에만 증강 + long-form 결합. val 은 clean 단일 발화로 일반화 측정.
+    train_ds = WhisperPhoneticDataset(
+        splits["train"], processor, augmentor=augmentor,
+        longform_prob=longform_prob, longform_max_sec=longform_max_sec,
+        noise_only_prob=noise_only_prob,
+    )
     val_records = splits.get("validation", splits["train"][:500])[:500]
     val_ds = WhisperPhoneticDataset(val_records, processor, augmentor=None)
 
     # ── 4. 모델 로드 ──
-    print(f"\n📥 모델 로드: {BASE_MODEL}")
-    model = WhisperForConditionalGeneration.from_pretrained(BASE_MODEL)
+    print(f"\n📥 모델 로드: {src_model}" + ("  (이어서 학습)" if init_model else "  (생짜에서 학습)"))
+    model = WhisperForConditionalGeneration.from_pretrained(src_model)
 
     # 강제 디코더 토큰 설정 (한국어, 전사 태스크)
     model.config.forced_decoder_ids = processor.get_decoder_prompt_ids(
@@ -372,9 +471,14 @@ def train(
     model.generation_config.forced_decoder_ids = processor.get_decoder_prompt_ids(
         language="ko", task="transcribe"
     )
-    # 반복 생성 방지 ("시퍼서 시퍼서 시퍼서..." 문제 해결)
-    model.generation_config.no_repeat_ngram_size = 3
-    model.generation_config.repetition_penalty = 1.2
+    # 디코딩 anti-repeat. 기본값을 앱(WhisperKit, neutral greedy) 과 맞춰 1.0/0 으로 두면,
+    # 학습 중 eval 지표가 앱이 실제로 겪는 환각을 반영한다(데이터로 환각을 고치는지 검증).
+    # 이전 crutch(1.2 / 3) 가 필요하면 CLI 로 지정.
+    model.generation_config.no_repeat_ngram_size = no_repeat_ngram_size
+    model.generation_config.repetition_penalty = repetition_penalty
+    print(f"  🎚️  디코딩: repetition_penalty={repetition_penalty}, "
+          f"no_repeat_ngram_size={no_repeat_ngram_size} "
+          f"({'앱 일치(neutral)' if repetition_penalty == 1.0 and no_repeat_ngram_size == 0 else 'anti-repeat'})")
 
     # SpecAugment (학습 시에만 적용, eval 영향 없음) — 소음 증강과 함께 robustness 강화
     model.config.apply_spec_augment   = True
@@ -437,8 +541,8 @@ def train(
     )
 
     # ── 7. 학습 시작 ──
-    print(f"\n🚀 Whisper Tiny 발음 전사 파인튜닝 시작!")
-    print(f"   모델: {BASE_MODEL} ({total_params/1e6:.0f}M params)")
+    print(f"\n🚀 Whisper 발음 전사 파인튜닝 시작!")
+    print(f"   모델: {src_model} ({total_params/1e6:.0f}M params)")
     print(f"   Train: {len(splits['train']):,}개 / Val: {len(val_records):,}개")
     print(f"   LR: {lr} / Epochs: {num_epochs} / Batch: {batch_size}×{grad_accum}")
     print(f"   스텝/에폭: {steps_per_epoch:,} / 총 스텝: {total_steps:,}")
@@ -474,6 +578,31 @@ if __name__ == "__main__":
                         help="데이터 검증만 수행")
     parser.add_argument("--no_augment", action="store_true",
                         help="원거리/소음 증강 비활성화 (clean 베이스라인 진단용)")
+    parser.add_argument("--p_tail", type=float, default=0.3,
+                        help="비음성 꼬리 증강 확률 (후반부 환각 억제)")
+    parser.add_argument("--longform_prob", type=float, default=0.3,
+                        help="여러 발화 이어붙인 long-form 샘플 비율 (>30초 후반부 커버)")
+    parser.add_argument("--longform_max_sec", type=float, default=28.0,
+                        help="long-form 목표 최대 길이(초)")
+    parser.add_argument("--noise_only_prob", type=float, default=0.05,
+                        help="순수 비음성→빈 라벨 샘플 비율 (noise-only 환각 억제). 과하면 조기 EOS 위험")
+    parser.add_argument("--competing_prob", type=float, default=0.0,
+                        help="경쟁 화자 증강 확률 (플랜 §7). held-out(test) 다른 화자를 타깃 우세 "
+                             "SIR 5~20dB(일부 0~5dB)로 부분 겹침 혼합. 라벨은 타깃만 유지. 0=비활성")
+    parser.add_argument("--competing_own_rir_prob", type=float, default=0.0,
+                        help="경쟁 시 간섭 화자를 타깃과 다른 RIR 로 울려 공간 분리 화자 모사 "
+                             "(플랜 §7 옵션). RIR 없으면 자동 무시. 0=base(공유 방)")
+    parser.add_argument("--babble_prob", type=float, default=0.0,
+                        help="웅성거림(babble) 증강 확률. held-out(test) 화자 3~7명을 등파워 "
+                             "합산한 배경을 SNR 0~15dB(일부 -5~0dB 하드)로 전 구간 혼합 — "
+                             "쇼핑몰/영상 재생음 조건(실기기 확인 갭). 라벨은 타깃만 유지. 0=비활성")
+    parser.add_argument("--repetition_penalty", type=float, default=1.0,
+                        help="기본 1.0=앱(WhisperKit) 일치. 1.2 등으로 anti-repeat crutch 사용 가능")
+    parser.add_argument("--no_repeat_ngram_size", type=int, default=0,
+                        help="기본 0=앱 일치. 3 등으로 반복 억제 crutch 사용 가능")
+    parser.add_argument("--init_model", type=str, default=None,
+                        help="이 체크포인트에서 이어서 학습 (예: best_model_zeroth_aug/best). "
+                             "미지정 시 openai/whisper-base 에서 처음부터")
     args = parser.parse_args()
 
     train(
@@ -487,4 +616,14 @@ if __name__ == "__main__":
         apply_g2p=args.apply_g2p,
         dry_run=args.dry_run,
         use_augment=not args.no_augment,
+        p_tail=args.p_tail,
+        longform_prob=args.longform_prob,
+        longform_max_sec=args.longform_max_sec,
+        noise_only_prob=args.noise_only_prob,
+        competing_prob=args.competing_prob,
+        competing_own_rir_prob=args.competing_own_rir_prob,
+        babble_prob=args.babble_prob,
+        repetition_penalty=args.repetition_penalty,
+        no_repeat_ngram_size=args.no_repeat_ngram_size,
+        init_model=args.init_model,
     )

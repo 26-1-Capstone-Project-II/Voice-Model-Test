@@ -27,3 +27,8 @@ segmented_test*/
 # 환경
 .env
 venv/
+wkt/
+coreml_out/
+best_model_vocab/.DS_Store
+finetuned_model_lora/.DS_Store
+.DS_Store

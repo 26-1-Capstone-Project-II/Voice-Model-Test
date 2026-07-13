@@ -1,15 +1,3 @@
-{
-  "chunk_length": 30,
-  "dither": 0.0,
-  "feature_extractor_type": "WhisperFeatureExtractor",
-  "feature_size": 80,
-  "hop_length": 160,
-  "n_fft": 400,
-  "n_samples": 480000,
-  "nb_max_frames": 3000,
-  "padding_side": "right",
-  "padding_value": 0.0,
-  "processor_class": "WhisperProcessor",
-  "return_attention_mask": false,
-  "sampling_rate": 16000
-}
+version https://git-lfs.github.com/spec/v1
+oid sha256:994838f1fa6462c8b9b3c90edada831f11f3dd8b4664634e18f4694d005c9dbf
+size 356
