@@ -96,13 +96,17 @@ echo "  증강 유지: COMPETING_PROB=$COMPETING_PROB BABBLE_PROB=$BABBLE_PROB"
 # ── 코퍼스 지문 — 캐시 재사용은 지문이 일치할 때만 ─────────
 # v2 사고: 코퍼스를 고쳐도 STEP A 가 "이미 존재 → 스킵"으로 옛 데이터셋을 재사용.
 # 코퍼스 생성기 + 합성 설정을 지문으로 남기고, 불일치 시 명시적으로 실패한다.
+hash_stdin () {  # sha256 헥사 지문 (Linux=sha256sum, macOS=shasum 둘 다 지원)
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum
+    else shasum -a 256; fi | cut -d' ' -f1
+}
 fingerprint_loanword () {
-    { shasum loanword_corpus.py prepare_loanword_tts.py 2>/dev/null;
-      echo "backend=$TTS_BACKEND eval=$TTS_EVAL_BACKEND args=$TTS_ARGS"; } | shasum | cut -d' ' -f1
+    { cat loanword_corpus.py prepare_loanword_tts.py 2>/dev/null;
+      echo "backend=$TTS_BACKEND eval=$TTS_EVAL_BACKEND args=$TTS_ARGS"; } | hash_stdin
 }
 fingerprint_kspon () {
-    { shasum prepare_kspon.py 2>/dev/null;
-      echo "trn=${KSPON_TRN:-} max=${KSPON_MAX_UTTS:-60000}"; } | shasum | cut -d' ' -f1
+    { cat prepare_kspon.py 2>/dev/null;
+      echo "trn=${KSPON_TRN:-} max=${KSPON_MAX_UTTS:-60000}"; } | hash_stdin
 }
 check_cache () {  # $1=디렉터리 $2=기대 지문 $3=라벨 → 0=재사용 가능, 1=캐시 없음
     local DIR="$1" WANT="$2" TAG="$3"
