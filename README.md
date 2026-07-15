@@ -16,6 +16,11 @@
 │   ├── test_whisper_phonetic.py     # 발음 전사 테스트 + 베이스라인 비교
 │   └── diagnose_farfield_baseline.py # 원거리/소음/긴발화 후반부 환각 정량 측정
 │
+├── [외래어/저빈도어 어휘 확장]
+│   ├── loanword_corpus.py           # 외래어 시드 어휘 + carrier 문장 생성기(조사 받침 처리)
+│   ├── prepare_loanword_tts.py      # 외래어 TTS 타깃 합성 (다중 백엔드 병합 + OOD 평가셋)
+│   └── prepare_kspon.py             # KsponSpeech 정규화((발음) 채택) → 학습 JSONL
+│
 ├── [공용 모듈]
 │   ├── korean_g2p_nomecab.py        # MeCab 없이 동작하는 G2P (Windows 호환)
 │   ├── jamo_utils.py                # 자모 Vocab 생성 + 음절↔자모 변환 유틸리티
@@ -23,6 +28,7 @@
 │
 ├── [학습/배포 자동화]
 │   ├── run_server_pipeline.sh       # 기준선→재학습→재기준선 원샷 (Linux 서버)
+│   ├── run_vocab_pipeline.sh        # 외래어/저빈도어 어휘 확장 재학습 원샷 (Linux 서버)
 │   └── convert_to_coreml.sh         # WhisperKit CoreML 변환 + 앱 번들 교체 (macOS)
 │
 ├── [iOS 변환 모델]
@@ -175,6 +181,49 @@ var options = DecodingOptions()
 options.suppressBlank = false        // 비음성 구간 환각 제거 (첫 토큰 EOS 허용)
 let result = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
 ```
+
+---
+
+## 🌐 외래어/저빈도어 어휘 확장 재학습
+
+실기기에서 외래어·저빈도어가 OOV로 오인식됩니다(데시벨 → "대시베르", 캡스톤 프로젝트 → "캠핑카 소개팅"). 원인은 음향이 아니라 **어휘**입니다 — Zeroth는 순수 한국어 낭독체라 이 음절열의 acoustic→text 매핑을 본 적이 없습니다. 따라서 RIR/소음 증강이 아니라 **학습 데이터의 어휘 도메인 확장**으로 풉니다.
+
+### 두 갈래 데이터 소스
+
+| 소스 | 스크립트 | 역할 |
+|------|----------|------|
+| **TTS 타깃 합성** | [prepare_loanword_tts.py](prepare_loanword_tts.py) + [loanword_corpus.py](loanword_corpus.py) | 실패하는 어휘를 carrier 문장에 끼워 한국어 TTS로 합성. **다중 백엔드 병합**(`--backend gtts,mms` — 문장별 랜덤 배정)으로 단일 합성 도메인 과적합을 방지하고, 화자 섭동(pitch/tempo)으로 음향 다양성 확보 |
+| **실제 자유대화** | [prepare_kspon.py](prepare_kspon.py) | KsponSpeech 정규화. **이중전사 `(철자)/(발음)`에서 (발음)을 채택** → 외래어가 들리는 대로(SK→에스케이) 라벨링되어 발음 전사 모델과 정확히 일치. 받침 약화·연음 등 자연 발화 신호는 이 축이 담당(TTS 낭독체로는 불가). AIHub 수동 다운로드 전제 |
+
+두 소스는 **섞어서** 씁니다. TTS 단독 학습은 파이프라인이 **명시적으로 거부**합니다(v2 검증: KsponSpeech가 조용히 스킵된 채 gtts 단독으로 학습되어, 학습 도메인에선 정확하지만 제3 TTS·실기기로는 전이가 약했음).
+
+### 학습 전략 — 배포본 이어서 + 추가 소스 병합 + 증강 전체 유지
+
+현재 배포본(`best_model_whisper` = 경쟁 화자+babble 증강)에서 **이어서** 학습하고, 음향/화자 증강(RIR/MUSAN/competing/babble/long-form)을 그대로 둔 채 train에만 어휘 소스를 더합니다. val/test는 Zeroth만 유지해 **clean 정확도 회귀를 정직하게** 측정합니다.
+
+```bash
+# 준비 → 전 기준선 → 어휘 확장 재학습 → 후 기준선 원샷 (Linux 서버)
+KSPON_AUDIO_ROOT=/data/KsponSpeech KSPON_TRN=/data/KsponSpeech_scripts/train.trn \
+    ./run_vocab_pipeline.sh
+
+# 빠른 배선 점검 (소량/1에폭, gtts 단독 허용)
+SMOKE=1 ./run_vocab_pipeline.sh
+```
+
+`finetune_whisper.py`에 추가된 토글:
+- `--extra_json_dirs loanword_dataset,kspon_dataset` — train에 더할 추가 소스(콤마 구분)
+- `--oversample 3` — 소규모 TTS 타깃셋을 N배 복제해 노출 빈도 확보
+
+### 평가 — 학습 도메인 held-out만으로 판정 금지
+
+v2의 평가 맹점(held-out이 학습과 같은 gtts 도메인이라 CER이 낙관적)을 막기 위해, 평가는 **학습에 쓰지 않은 신호**로 구성합니다.
+
+- **외래어 OOD**: `--eval_backend`로 학습 풀에 없는 TTS 엔진(기본 melo)이 test를 합성
+- **문단 낭독**: test 문장 여러 개를 한 텍스트로 통째 합성(`test_paragraph.jsonl`) — 연속 운율의 장문 열화 측정 (짧은 클립 오디오 이어붙이기와 다름)
+- **Zeroth 회귀**: clean/소음 + 경쟁화자/babble 지표(babble_snr0, comp_sir0)가 직전 배포본 대비 유지되는지 확인
+- 판별 케이스: "캡스톤 프로젝트", "데시벨" + 받침 문장(없어요/않아요/보내겠습니다) 실기기 확인
+
+데이터셋 캐시는 코퍼스 생성기+설정의 **지문(fingerprint)이 일치할 때만 재사용**하고, 불일치하면 실패합니다(코퍼스를 고쳤는데 옛 데이터셋으로 학습되는 사고 방지). **운용:** 새 실패 어휘가 나오면 [loanword_corpus.py](loanword_corpus.py)의 `WORDS`에 단어를 추가하고 재합성·재학습하면 됩니다.
 
 ---
 

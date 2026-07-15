@@ -372,6 +372,8 @@ def train(
     repetition_penalty=1.0,
     no_repeat_ngram_size=0,
     init_model=None,
+    extra_json_dirs=None,
+    oversample=1,
 ):
     # Lazy imports (PEFT 버전 충돌 방지)
     from transformers import (
@@ -398,12 +400,35 @@ def train(
 
     # ── 2. 데이터 로드 ──
     print(f"\n🔍 [데이터 탐색 시작]")
-    print(f"   📂 JSONL 경로: {json_dir}")
+    print(f"   📂 JSONL 경로(주): {json_dir}")
     splits = load_data(json_dir, max_samples, apply_g2p)
 
     if not splits.get("train"):
         print("❌ train 데이터가 없습니다!")
         return
+
+    # ── 추가 데이터 소스 병합 (어휘 도메인 확장: 외래어/저빈도어) ──
+    # 외래어 TTS(loanword_dataset) + 실제 자유대화(kspon_dataset) 등을 train 에 더한다.
+    # val/test 는 주(主) 코퍼스(Zeroth)만 유지 → 깨끗한 정확도 회귀를 정직하게 측정.
+    # oversample: 추가셋(특히 소규모 TTS 타깃셋)을 N배 복제해 노출 빈도를 확보한다.
+    if extra_json_dirs:
+        for d in extra_json_dirs:
+            d = d.strip()
+            if not d:
+                continue
+            print(f"\n   ➕ 추가 소스 병합: {d}  (oversample ×{oversample})")
+            extra = load_data(d, max_samples=0, apply_g2p=apply_g2p)
+            extra_train = extra.get("train", [])
+            if not extra_train:
+                print(f"      ⚠️ {d} 에 train 이 없어 건너뜀")
+                continue
+            splits["train"].extend(extra_train * max(1, oversample))
+            print(f"      → +{len(extra_train) * max(1, oversample):,}개 "
+                  f"(원본 {len(extra_train):,} × {max(1, oversample)})")
+        # 병합 후 셔플 (소스가 블록으로 몰리지 않도록)
+        import random as _rnd
+        _rnd.Random(42).shuffle(splits["train"])
+        print(f"\n   ✅ 병합 후 train 총계: {len(splits['train']):,}개")
 
     # ── Dry Run 모드 ──
     if dry_run:
@@ -603,6 +628,11 @@ if __name__ == "__main__":
     parser.add_argument("--init_model", type=str, default=None,
                         help="이 체크포인트에서 이어서 학습 (예: best_model_zeroth_aug/best). "
                              "미지정 시 openai/whisper-base 에서 처음부터")
+    parser.add_argument("--extra_json_dirs", type=str, default="",
+                        help="train 에 더할 추가 데이터 디렉터리(콤마 구분). "
+                             "예: loanword_dataset,kspon_dataset (외래어/저빈도어 도메인 확장)")
+    parser.add_argument("--oversample", type=int, default=1,
+                        help="추가 소스 복제 배수 (소규모 TTS 타깃셋 노출 빈도 확보용)")
     args = parser.parse_args()
 
     train(
