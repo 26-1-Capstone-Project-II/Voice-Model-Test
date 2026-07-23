@@ -46,10 +46,15 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 import librosa
+import torch
 from tqdm import tqdm
 
 from loanword_corpus import generate_sentences
 from korean_g2p_nomecab import load_g2p
+
+# cuDNN 비활성화 (서버 CUDA/cuDNN 버전 불일치 — finetune_whisper.py 와 동일 사유).
+# melo(VITS+BERT) 의 Conv1d 가 이 서버에서 CUDNN_STATUS_NOT_INITIALIZED 로 죽는 문제를 우회.
+torch.backends.cudnn.enabled = False
 
 TARGET_SR = 16000
 
