@@ -89,7 +89,10 @@ if [ "$SMOKE" = "1" ]; then
     DIAG_N=8; NOISE_CLIPS=4; TRAIN_ARGS="--max_samples 200 --num_epochs 1 --lr $LR"
 else
     echo "🚀 본 학습 모드"
-    TTS_ARGS="--per_word 6 --perturb"
+    TTS_ARGS="--per_word 6"
+    # PERTURB=0 이면 화자 섭동(pitch/tempo) 비활성 — melo 오디오 특성과 안 맞아
+    # 품질을 깎았을 가능성 검증용 비교 런에 사용(기본값 1=기존 동작 유지).
+    [ "${PERTURB:-1}" = "1" ] && TTS_ARGS="$TTS_ARGS --perturb"
     # §9: 고정 조건 비교 — Zeroth test 전량(457) + 시드 고정(diagnose 내부 고정 시드)
     DIAG_N="${DIAG_N:-457}"; NOISE_CLIPS=50; TRAIN_ARGS="--num_epochs $EPOCHS --lr $LR"
 fi
