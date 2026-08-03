@@ -7,10 +7,21 @@
 #       '어휘 도메인 확장'이 필요 → TTS 타깃 합성 + 실제 자유대화(KsponSpeech).
 #
 # v2 학습에서 검증된 문제 4가지와 v3 대응:
-#   1. TTS 단일 도메인(gtts만)         → 다중 백엔드 병합(TTS_BACKEND=gtts,mms)
+#   1. TTS 단일 도메인(gtts만)         → (v3.1 갱신: 라이선스 문제로 gtts/mms 전면 금지,
+#                                        melo(MIT) 단독으로 전환 — 상세는 아래 라이선스 메모)
 #   2. 받침/연음 신호 부족             → KsponSpeech(실발화) 미지정 시 명시적 실패
 #   3. 장문 열화                       → 문단 낭독 평가셋(test_paragraph) 신설
 #   4. 평가 맹점(학습 도메인 held-out) → 학습 미사용 TTS 엔진으로 test 합성(OOD)
+#                                        ※ v3.1: melo가 학습 백엔드로 들어가면서
+#                                        held-out TTS 엔진이 없음 — 임시로 OOD 분리
+#                                        비활성(TTS_EVAL_BACKEND 미지정 시 학습 풀과
+#                                        동일 도메인으로 평가). 실기기 테스트가 그동안
+#                                        유일한 진짜 OOD 신호. 후속: 실녹음 eval셋으로 대체 예정.
+#
+# 라이선스 메모(2026-07-31): gTTS(translate.google.com 비공식 엔드포인트, 상업 이용
+# 근거 없음)·facebook/mms-tts-kor(CC BY-NC 4.0, 비상업 전용) 둘 다 상업 배포 블로커라
+# v3.1부터 학습 TTS는 melo(MIT, myshell-ai/MeloTTS-Korean) 단독만 사용한다.
+# xtts(Coqui, CPML 비상업)도 동일 사유로 학습·평가 어느 쪽에도 사용 금지.
 #
 # 순서:
 #   (A) 외래어 TTS 합성셋 준비   (캐시는 코퍼스 지문 일치 시에만 재사용)
@@ -21,10 +32,10 @@
 # CoreML 변환은 macOS 전용(여기 미포함): 학습 후 Mac에서 ./convert_to_coreml.sh.
 #
 # 사용:
-#   # 빠른 배선 점검 (소량/1에폭, gtts 단독 허용)
+#   # 빠른 배선 점검 (소량/1에폭)
 #   SMOKE=1 ./run_vocab_pipeline.sh
 #
-#   # 본 학습 (TTS=gtts+mms 병합, OOD 평가=melo, KsponSpeech 포함)
+#   # 본 학습 (TTS=melo 단독, KsponSpeech 포함)
 #   KSPON_AUDIO_ROOT=/data/KsponSpeech KSPON_TRN=/data/KsponSpeech_scripts/train.trn \
 #       ./run_vocab_pipeline.sh
 set -euo pipefail
@@ -44,10 +55,12 @@ INIT_MODEL="${INIT_MODEL:-$BASELINE_MODEL}"
 OUT_DIR="${OUT_DIR:-best_model_vocab}"
 RESULTS="${RESULTS:-results_vocab}"
 OVERSAMPLE="${OVERSAMPLE:-3}"                                 # TTS 타깃셋 노출 배수
-# TTS: 콤마 구분 다중 백엔드(문장별 랜덤 배정)로 합성 도메인 다양화.
-# EVAL 백엔드는 학습에 쓰지 않는 엔진 — test/문단이 out-of-domain 평가셋이 된다.
-TTS_BACKEND="${TTS_BACKEND:-gtts,mms}"
-TTS_EVAL_BACKEND="${TTS_EVAL_BACKEND:-melo}"
+# TTS: melo(MIT) 단독 — gtts/mms/xtts는 상업 이용 불가라 전면 배제(위 라이선스 메모).
+# EVAL 백엔드는 학습에 쓰지 않는 엔진일 때만 진짜 OOD 인데, 지금은 melo 외에 상업
+# 이용 가능한 대체 엔진이 없어 미지정(임시) — test/문단이 학습 풀과 같은 도메인이
+# 된다. 진짜 일반화 확인은 실기기 테스트로 대체. 후속: 실녹음 eval셋 도입 예정.
+TTS_BACKEND="${TTS_BACKEND:-melo}"
+TTS_EVAL_BACKEND="${TTS_EVAL_BACKEND:-}"
 PARAGRAPHS="${PARAGRAPHS:-60}"                                # 문단 낭독 평가 클립 수
 # 기존 음향/화자 증강 유지 (직전 배포본과 동일 기본값 — run_server_pipeline.sh 참조)
 COMPETING_PROB="${COMPETING_PROB:-0.3}"
@@ -69,7 +82,7 @@ EPOCHS="${EPOCHS:-3}"
 
 if [ "$SMOKE" = "1" ]; then
     echo "🧪 SMOKE 모드 — 소량/1에폭 빠른 배선 점검"
-    TTS_BACKEND="${TTS_BACKEND_SMOKE:-gtts}"
+    TTS_BACKEND="${TTS_BACKEND_SMOKE:-melo}"
     TTS_EVAL_BACKEND="${TTS_EVAL_BACKEND_SMOKE:-}"
     PARAGRAPHS=4
     TTS_ARGS="--per_word 2 --limit 40"
@@ -168,7 +181,11 @@ echo ""; echo "  ➕ 학습 추가 소스: $EXTRA"
 eval_sets () {  # $1=model_path  $2=결과 하위폴더
     local M="$1" TAG="$2"
     if [ -n "$LOAN_EVAL" ]; then
-        echo "  · 외래어 OOD 평가 ($TAG) — 학습 미사용 TTS(${TTS_EVAL_BACKEND:-학습 풀과 동일})"
+        if [ -n "$TTS_EVAL_BACKEND" ]; then
+            echo "  · 외래어 OOD 평가 ($TAG) — 학습 미사용 TTS($TTS_EVAL_BACKEND)"
+        else
+            echo "  · 외래어 평가 ($TAG) — [경고] 학습 풀과 동일 도메인(진짜 OOD 아님, 임시 — 실기기로 대체 확인)"
+        fi
         eval $PY diagnose_farfield_baseline.py --model_path "$M" \
             --json_dir "$LOAN_EVAL" --split test --num_samples $DIAG_N --apply_g2p \
             --snr_list 10 --tail_sec 0 --noise_only_clips 0 --no_competing --no_babble \
@@ -222,13 +239,13 @@ eval_sets "$NEW_MODEL" "after"
 
 # ── 결과 안내 ──────────────────────────────────────────────
 echo ""; echo "✅ 파이프라인 완료"
-echo "  외래어 OOD 전/후 : $RESULTS/before/loanword/summary.md   vs  $RESULTS/after/loanword/summary.md"
+echo "  외래어 전/후 (${TTS_EVAL_BACKEND:-학습 풀과 동일, OOD 아님}) : $RESULTS/before/loanword/summary.md   vs  $RESULTS/after/loanword/summary.md"
 echo "  문단 낭독 전/후  : $RESULTS/before/paragraph/summary.md  vs  $RESULTS/after/paragraph/summary.md"
 echo "  Zeroth 회귀 전/후 : $RESULTS/before/zeroth/summary.md    vs  $RESULTS/after/zeroth/summary.md"
 echo "  새 모델          : $NEW_MODEL"
 echo ""
 echo "배포 게이트(§9, docs/whisper-model-setup.md):"
-echo "  1) 외래어 OOD(비학습 TTS)·문단 낭독 개선 — gtts held-out 만으로 판정 금지"
+echo "  1) 외래어·문단 낭독 개선 — TTS_EVAL_BACKEND 미설정 시 학습 풀과 동일 도메인이라 OOD 아님. 반드시 실기기 테스트로 교차 검증 후 배포 판단"
 echo "  2) Zeroth clean 회귀 없음"
 echo "  3) babble_snr0 / comp_sir0 이 직전 배포본(before/zeroth) 대비 유지"
 echo "  판별 케이스: '캡스톤 프로젝트', '데시벨' + 받침 문장(없어요/않아요/보내겠습니다)"

@@ -4,6 +4,12 @@ sampled_dataset/
 zeroth_dataset/
 구음장애 음성인식 데이터/
 
+# AI Hub 원본/재가공 데이터 — 외부 유출 금지 조항 대상, 리포에 절대 커밋 금지
+kspon_dataset/
+loanword_dataset/
+loanword_smoke*/
+kspon_smoke*/
+
 # 이전/기타 모델 출력
 finetuned_model/
 quantized_model/
