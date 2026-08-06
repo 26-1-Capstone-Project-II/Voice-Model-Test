@@ -48,6 +48,7 @@ WS="${WS:-$HOME/mingly_workspace/Voice-Model-Test}"
 ZEROTH_DIR="${ZEROTH_DIR:-zeroth_dataset}"                    # 주(主) 코퍼스 (val/test 기준)
 LOANWORD_DIR="${LOANWORD_DIR:-$WS/loanword_dataset}"          # 외래어 TTS 합성셋
 KSPON_DIR="${KSPON_DIR:-$WS/kspon_dataset}"                   # 실제 자유대화 정규화셋
+NEWS_IT_DIR="${NEWS_IT_DIR:-}"                                # 실제 뉴스 낭독 음성(IT과학, prepare_news_it.py)
 # 현재 배포본(babble 증강, On-Voice #268 = 6efa494c 산출물)에서 이어서 학습.
 # 화자 격리(경쟁 화자/babble) 학습 측 방어를 보존한 채 어휘만 확장한다.
 BASELINE_MODEL="${BASELINE_MODEL:-best_model_whisper/best}"
@@ -139,16 +140,23 @@ check_cache () {  # $1=디렉터리 $2=기대 지문 $3=라벨 → 0=재사용 �
 }
 
 # ── STEP A: 외래어 TTS 합성셋 준비 ─────────────────────────
-echo ""; echo "════════ STEP A: 외래어 TTS 합성셋 ════════"
-LOAN_FP="$(fingerprint_loanword)"
-if check_cache "$LOANWORD_DIR" "$LOAN_FP" "loanword"; then
-    echo "  ✅ 캐시 재사용(지문 일치) → $LOANWORD_DIR"
+# SKIP_LOANWORD_TTS=1 이면 TTS(melo) 합성 자체를 건너뛴다 — melo 재합성
+# 변동성 검증 이후, 실제 낭독 음성(NEWS_IT_DIR 등)만으로 학습할 때 사용.
+if [ "${SKIP_LOANWORD_TTS:-0}" = "1" ]; then
+    echo ""; echo "════════ STEP A: 외래어 TTS 합성셋 — SKIP_LOANWORD_TTS=1, 건너뜀 ════════"
+    LOAN_EVAL=""
 else
-    eval $PY prepare_loanword_tts.py --backend "$TTS_BACKEND" \
-        --output_dir "$LOANWORD_DIR" $TTS_ARGS
-    echo "$LOAN_FP" > "$LOANWORD_DIR/.corpus_fingerprint"
+    echo ""; echo "════════ STEP A: 외래어 TTS 합성셋 ════════"
+    LOAN_FP="$(fingerprint_loanword)"
+    if check_cache "$LOANWORD_DIR" "$LOAN_FP" "loanword"; then
+        echo "  ✅ 캐시 재사용(지문 일치) → $LOANWORD_DIR"
+    else
+        eval $PY prepare_loanword_tts.py --backend "$TTS_BACKEND" \
+            --output_dir "$LOANWORD_DIR" $TTS_ARGS
+        echo "$LOAN_FP" > "$LOANWORD_DIR/.corpus_fingerprint"
+    fi
+    [ -s "$LOANWORD_DIR/test.jsonl" ] && LOAN_EVAL="$LOANWORD_DIR" || LOAN_EVAL=""
 fi
-[ -s "$LOANWORD_DIR/test.jsonl" ] && LOAN_EVAL="$LOANWORD_DIR" || LOAN_EVAL=""
 
 # ── STEP B: KsponSpeech 정규화셋 준비 ──────────────────────
 # v2 사고: env 미지정 시 조용히 스킵 → TTS 단독 학습이 되어 받침/연음 등
@@ -161,6 +169,8 @@ elif [ -n "${KSPON_AUDIO_ROOT:-}" ] && [ -n "${KSPON_TRN:-}" ]; then
     eval $PY prepare_kspon.py --audio_root "$KSPON_AUDIO_ROOT" --trn "$KSPON_TRN" \
         --output_dir "$KSPON_DIR" --max_utts "${KSPON_MAX_UTTS:-60000}"
     echo "$KSPON_FP" > "$KSPON_DIR/.corpus_fingerprint"
+elif [ -n "$NEWS_IT_DIR" ] && [ -s "$NEWS_IT_DIR/train.jsonl" ]; then
+    echo "  ℹ️ KsponSpeech 없음 — NEWS_IT_DIR(실제 뉴스 낭독 음성)로 대체, TTS 단독 아님"
 elif [ "$SMOKE" = "1" ] || [ "$ALLOW_TTS_ONLY" = "1" ]; then
     echo "  ⚠️ KsponSpeech 없음 — SMOKE/ALLOW_TTS_ONLY 라서 TTS 단독으로 계속(배선 점검 전용)"
 else
@@ -177,6 +187,7 @@ fi
 EXTRA=""
 [ -s "$LOANWORD_DIR/train.jsonl" ] && EXTRA="$LOANWORD_DIR"
 [ -s "$KSPON_DIR/train.jsonl" ] && EXTRA="${EXTRA:+$EXTRA,}$KSPON_DIR"
+[ -n "$NEWS_IT_DIR" ] && [ -s "$NEWS_IT_DIR/train.jsonl" ] && EXTRA="${EXTRA:+$EXTRA,}$NEWS_IT_DIR"
 [ -n "$EXTRA" ] || { echo "❌ 추가 학습 소스가 하나도 없음 — 중단"; exit 1; }
 echo ""; echo "  ➕ 학습 추가 소스: $EXTRA"
 

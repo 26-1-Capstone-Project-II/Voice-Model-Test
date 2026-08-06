@@ -1,9 +1,9 @@
-@"
 torch>=2.0.0
 torchaudio>=2.0.0
-transformers>=5.0.0
-datasets>=4.0.0
+transformers==4.46.3
+peft>=0.13,<0.14
 accelerate>=1.0.0
+datasets>=4.0.0
 evaluate>=0.4.0
 jiwer>=3.0.0
 librosa>=0.10.0
@@ -15,4 +15,3 @@ gtts>=2.3.0
 pyttsx3>=2.90
 sounddevice>=0.4.6
 scipy>=1.11.0
-"@ | Out-File -FilePath requirements.txt -Encoding utf8
