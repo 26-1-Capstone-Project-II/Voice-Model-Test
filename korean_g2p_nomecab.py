@@ -210,22 +210,44 @@ class G2pFallback:
 # g2pk 자동 감지 로더 (권장 사용 방식)
 # ────────────────────────────────────────────
 
+class _EojeolWiseG2p:
+    """G2P를 **어절(공백) 단위**로 적용해 어절 경계를 넘는 과연음을 막는 래퍼.
+
+    g2pk는 문장을 통짜로 넘기면 경계에서 연음을 과적용해 라벨을 뭉갠다:
+        "봇 얘기 하셨죠"        → "보 댸기 하셛쬬"        (❌ 봇 얘기 → 보 댸기)
+        "시리즈 에이를 어떻게"  → "시리즈 에이르 러떠케"  (❌ 를 어떻게 → 르 러떠케)
+    그런데 학습 오디오(TTS)는 또박또박(경계 비연음) 발음이라, 통짜 라벨은 오디오와
+    어긋나 '정상 오디오 → 깨진 라벨' 학습이 되어 외래어 전사가 무너졌다(환각/과생성).
+
+    어절별로 끊어 각각 G2P하면 경계 연음이 원천 차단된다("볻 얘기 하셛쬬"). 조사는
+    어절 안(공백 없음)이라 어절 내부 규칙(연음·비음화·경음화 등)은 그대로 적용된다.
+    앱의 KoreanG2P가 '경계는 조사만 연음'으로 막은 것과 같은 원칙이다.
+    """
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __call__(self, text, **kwargs):
+        return " ".join(
+            self._inner(tok, **kwargs).strip() for tok in str(text).split()
+        )
+
+
 def load_g2p():
     """
     g2pk가 설치되어 있으면 g2pk.G2p 사용,
     없으면 G2pFallback 사용.
-    어느 쪽이든 동일한 인터페이스를 반환합니다.
+    어느 쪽이든 **어절 단위 래퍼(_EojeolWiseG2p)**로 감싸 동일 인터페이스를 반환한다.
     """
     try:
         from g2pk import G2p
         g2p = G2p()
-        print("✅ G2P: g2pk (MeCab 버전) 사용")
-        return g2p
+        print("✅ G2P: g2pk (MeCab 버전) 사용 — 어절 단위 적용(경계 과연음 방지)")
+        return _EojeolWiseG2p(g2p)
     except Exception:
         g2p = G2pFallback()
-        print("⚠️  G2P: MeCab 없이 동작하는 폴백 버전 사용")
+        print("⚠️  G2P: MeCab 없이 동작하는 폴백 버전 사용 — 어절 단위 적용")
         print("    (MeCab 설치 후 pip install g2pk 로 정밀도 향상 가능)")
-        return g2p
+        return _EojeolWiseG2p(g2p)
 
 
 # ────────────────────────────────────────────
