@@ -49,7 +49,7 @@ import librosa
 import torch
 from tqdm import tqdm
 
-from loanword_corpus import generate_sentences
+from loanword_corpus import generate_sentences, generate_heldout_sentences
 from korean_g2p_nomecab import load_g2p
 
 # cuDNN 비활성화 (서버 CUDA/cuDNN 버전 불일치 — finetune_whisper.py 와 동일 사유).
@@ -218,6 +218,10 @@ def main():
     ap.add_argument("--paragraph_sents", type=int, default=4,
                     help="문단당 문장 수")
     ap.add_argument("--limit", type=int, default=0, help="문장 수 상한(0=무제한, 점검용)")
+    ap.add_argument("--heldout_per_word", type=int, default=3,
+                    help="미지-어휘(HELDOUT_WORDS, 학습과 disjoint) held-out eval 의 단어당 "
+                         "문장 수(0=off). heldout.jsonl 로 저장, 학습엔 안 들어감 → 진짜 일반화 측정")
+    ap.add_argument("--heldout_limit", type=int, default=0, help="held-out 문장 수 상한(0=무제한)")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
@@ -344,6 +348,42 @@ def main():
                     para_count += 1
         else:
             print(f"  ⚠️ test 문장 {len(test_sents)}개 < 문단당 {args.paragraph_sents}개 — 문단셋 생략")
+
+    # 5-b. 미지-어휘 held-out eval — HELDOUT_WORDS(학습 WORDS 와 disjoint)로 만든 문장을
+    #      전부 eval 전용으로 합성해 heldout.jsonl 로 쓴다. 학습(train.jsonl)엔 절대 안 들어가고
+    #      diagnose --split heldout 로만 읽힌다 → '학습에서 본 적 없는 일상 외래어' 일반화 측정.
+    #      엔진-OOD 는 못 하지만(라이선스상 melo 단독), 어휘-OOD 신호가 목적이라 train 백엔드로 합성.
+    heldout_count = 0
+    if args.heldout_per_word > 0:
+        h_sents = generate_heldout_sentences(per_word=args.heldout_per_word,
+                                             pair_ratio=args.pair_ratio, seed=args.seed + 1)
+        if args.heldout_limit > 0:
+            h_sents = h_sents[:args.heldout_limit]
+        h_tts, h_name = (eval_tts, eval_name) if eval_tts is not None \
+            else (train_pool[0], train_pool_names[0])
+        with open(out_dir / "heldout.jsonl", "w", encoding="utf-8") as hw:
+            for j, text in enumerate(tqdm(h_sents, desc="held-out TTS")):
+                try:
+                    wav = h_tts.synth(text)
+                    if args.perturb:
+                        wav = perturb_speaker(wav, rng)
+                except Exception as e:
+                    if heldout_count == 0:
+                        print(f"  ⚠️ held-out 합성 실패: {e}")
+                    continue
+                if wav is None or len(wav) < int(0.2 * TARGET_SR):
+                    continue
+                wav_path = wav_dir / f"heldout_{j:06d}.wav"
+                sf.write(str(wav_path), wav, TARGET_SR)
+                hw.write(json.dumps({
+                    "wav_path": str(wav_path),
+                    "transcript": text,
+                    "label": g2p(text, descriptive=True).strip(),
+                    "duration": float(len(wav) / TARGET_SR),
+                    "source": "loanword_tts_heldout",
+                    "tts_backend": h_name,
+                }, ensure_ascii=False) + "\n")
+                heldout_count += 1
 
     total = sum(counts.values())
     if total == 0:

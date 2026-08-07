@@ -200,6 +200,13 @@ eval_sets () {  # $1=model_path  $2=결과 하위폴더
                 --snr_list 10 --tail_sec 0 --noise_only_clips 0 --no_competing --no_babble \
                 --output_dir "$RESULTS/$TAG/paragraph"
         fi
+        if [ -s "$LOAN_EVAL/heldout.jsonl" ]; then
+            echo "  · 미지-어휘 held-out 평가 ($TAG) — 학습 WORDS 와 disjoint(진짜 일반화)"
+            eval $PY diagnose_farfield_baseline.py --model_path "$M" \
+                --json_dir "$LOAN_EVAL" --split heldout --num_samples $DIAG_N --apply_g2p \
+                --snr_list 10 --tail_sec 0 --noise_only_clips 0 --no_competing --no_babble \
+                --output_dir "$RESULTS/$TAG/heldout"
+        fi
     fi
     echo "  · Zeroth 회귀 평가 ($TAG) — clean/소음 + 경쟁화자/babble 지표 유지 확인"
     eval $PY diagnose_farfield_baseline.py --model_path "$M" \
