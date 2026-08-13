@@ -119,6 +119,28 @@ echo "  증강 유지: COMPETING_PROB=$COMPETING_PROB BABBLE_PROB=$BABBLE_PROB"
 [ -f "$ZEROTH_DIR/test.jsonl" ] || { echo "❌ $ZEROTH_DIR/test.jsonl 없음 (prepare_zeroth.py 먼저)"; exit 1; }
 [ -f "$BASELINE_MODEL/config.json" ] || echo "⚠️ $BASELINE_MODEL 없음 — STEP 0(전 기준선) 건너뜀"
 
+# 소음/잔향 코퍼스 — 없으면 증강이 조용히 no-op 이 된다(로그의 "noise=0 rir=0").
+# 학습에선 소음·잔향·비음성 꼬리 증강이, 평가에선 noise/reverb 조건이 통째로 무의미해져
+# clean 과 같은 수치가 나오므로, 몇 시간짜리 런을 태우기 전에 여기서 막는다.
+# 의식적으로 소음 없이 돌릴 때만 ALLOW_NO_NOISE=1.
+MISSING_AUG=""
+[ -d "$MUSAN_NOISE_DIR" ] || MISSING_AUG="MUSAN_NOISE_DIR=$MUSAN_NOISE_DIR"
+[ -d "$RIR_DIR" ] || MISSING_AUG="${MISSING_AUG:+$MISSING_AUG, }RIR_DIR=$RIR_DIR"
+if [ -n "$MISSING_AUG" ]; then
+    if [ "${ALLOW_NO_NOISE:-0}" = "1" ] || [ "$SMOKE" = "1" ]; then
+        echo "⚠️ 소음/잔향 코퍼스 없음 ($MISSING_AUG) — 소음·잔향·꼬리 증강 없이 진행합니다."
+        echo "   평가의 noise/reverb 조건도 clean 과 동일해집니다(비교 무의미)."
+    else
+        echo "❌ 소음/잔향 코퍼스 경로 없음: $MISSING_AUG"
+        echo "   이대로 두면 학습의 소음·잔향·비음성 꼬리 증강이 조용히 비활성화되고,"
+        echo "   평가의 noise/reverb 조건도 clean 과 같은 값이 나와 비교가 무의미해집니다."
+        echo "   실제 경로를 지정해 재실행하세요:"
+        echo "     MUSAN_NOISE_DIR=/경로/musan/noise RIR_DIR=/경로/RIRS_NOISES/simulated_rirs ./run_vocab_pipeline.sh"
+        echo "   의식적으로 소음 없이 돌릴 때만 ALLOW_NO_NOISE=1."
+        exit 1
+    fi
+fi
+
 # ── 코퍼스 지문 — 캐시 재사용은 지문이 일치할 때만 ─────────
 # v2 사고: 코퍼스를 고쳐도 STEP A 가 "이미 존재 → 스킵"으로 옛 데이터셋을 재사용.
 # 코퍼스 생성기 + 합성 설정을 지문으로 남기고, 불일치 시 명시적으로 실패한다.
