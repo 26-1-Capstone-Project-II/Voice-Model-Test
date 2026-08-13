@@ -18,6 +18,11 @@
 #                                        동일 도메인으로 평가). 실기기 테스트가 그동안
 #                                        유일한 진짜 OOD 신호. 후속: 실녹음 eval셋으로 대체 예정.
 #
+# v3.2 사고(2026-08-13 발견): --extra_json_dirs / --oversample 가 finetune_whisper.py
+# 호출부에서 train() 으로 전달되지 않아, 외래어·KsponSpeech 가 통째로 빠진 채 Zeroth
+# 단독으로 재학습되고 있었다. 학습 로그에 "➕ 추가 소스 병합" 줄이 없으면 그 상태다.
+# → 전달 배선 복구 + 병합 0개면 명시적 실패 + 소스별 배수(LOAN_OVERSAMPLE/KSPON_OVERSAMPLE).
+#
 # 라이선스 메모(2026-07-31): gTTS(translate.google.com 비공식 엔드포인트, 상업 이용
 # 근거 없음)·facebook/mms-tts-kor(CC BY-NC 4.0, 비상업 전용) 둘 다 상업 배포 블로커라
 # v3.1부터 학습 TTS는 melo(MIT, myshell-ai/MeloTTS-Korean) 단독만 사용한다.
@@ -55,6 +60,11 @@ INIT_MODEL="${INIT_MODEL:-$BASELINE_MODEL}"
 OUT_DIR="${OUT_DIR:-best_model_vocab}"
 RESULTS="${RESULTS:-results_vocab}"
 OVERSAMPLE="${OVERSAMPLE:-3}"                                 # TTS 타깃셋 노출 배수
+# 소스별 배수(미지정 시 OVERSAMPLE 과 동일 = 기존 동작). 외래어셋은 KsponSpeech 6만에
+# 비해 1천 단위라 같은 배수를 쓰면 학습 데이터의 2% 안팎에 그친다 — 어휘 확장 신호를
+# 키우려면 LOAN_OVERSAMPLE 만 올린다(단일 변수 A/B).
+LOAN_OVERSAMPLE="${LOAN_OVERSAMPLE:-$OVERSAMPLE}"
+KSPON_OVERSAMPLE="${KSPON_OVERSAMPLE:-$OVERSAMPLE}"
 # TTS: melo(MIT) 단독 — gtts/mms/xtts는 상업 이용 불가라 전면 배제(위 라이선스 메모).
 # EVAL 백엔드는 학습에 쓰지 않는 엔진일 때만 진짜 OOD 인데, 지금은 melo 외에 상업
 # 이용 가능한 대체 엔진이 없어 미지정(임시) — test/문단이 학습 풀과 같은 도메인이
@@ -175,10 +185,17 @@ fi
 
 # ── 추가 소스 목록 구성 ────────────────────────────────────
 EXTRA=""
-[ -s "$LOANWORD_DIR/train.jsonl" ] && EXTRA="$LOANWORD_DIR"
-[ -s "$KSPON_DIR/train.jsonl" ] && EXTRA="${EXTRA:+$EXTRA,}$KSPON_DIR"
+EXTRA_MULT=""     # EXTRA 와 같은 순서의 소스별 oversample 목록
+if [ -s "$LOANWORD_DIR/train.jsonl" ]; then
+    EXTRA="$LOANWORD_DIR"
+    EXTRA_MULT="$LOAN_OVERSAMPLE"
+fi
+if [ -s "$KSPON_DIR/train.jsonl" ]; then
+    EXTRA="${EXTRA:+$EXTRA,}$KSPON_DIR"
+    EXTRA_MULT="${EXTRA_MULT:+$EXTRA_MULT,}$KSPON_OVERSAMPLE"
+fi
 [ -n "$EXTRA" ] || { echo "❌ 추가 학습 소스가 하나도 없음 — 중단"; exit 1; }
-echo ""; echo "  ➕ 학습 추가 소스: $EXTRA"
+echo ""; echo "  ➕ 학습 추가 소스: $EXTRA  (oversample: $EXTRA_MULT)"
 
 # ── 평가 헬퍼: 외래어 OOD(clean) + 문단 낭독 + Zeroth 회귀(전 조건) ──
 eval_sets () {  # $1=model_path  $2=결과 하위폴더
@@ -235,6 +252,7 @@ fi
 eval $PY finetune_whisper.py \
     --json_dir "$ZEROTH_DIR" --apply_g2p \
     --extra_json_dirs "$EXTRA" --oversample "$OVERSAMPLE" \
+    --extra_oversample "$EXTRA_MULT" \
     --p_tail 0.3 --longform_prob 0.3 --noise_only_prob "${NOISE_ONLY_PROB:-0.05}" \
     --competing_prob "$COMPETING_PROB" --competing_own_rir_prob "$COMPETING_OWN_RIR_PROB" \
     --babble_prob "$BABBLE_PROB" \

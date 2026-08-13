@@ -374,6 +374,7 @@ def train(
     init_model=None,
     extra_json_dirs=None,
     oversample=1,
+    extra_oversample=None,
 ):
     # Lazy imports (PEFT 버전 충돌 방지)
     from transformers import (
@@ -411,24 +412,46 @@ def train(
     # 외래어 TTS(loanword_dataset) + 실제 자유대화(kspon_dataset) 등을 train 에 더한다.
     # val/test 는 주(主) 코퍼스(Zeroth)만 유지 → 깨끗한 정확도 회귀를 정직하게 측정.
     # oversample: 추가셋(특히 소규모 TTS 타깃셋)을 N배 복제해 노출 빈도를 확보한다.
+    # extra_oversample: 소스별 배수(순서 1:1). 소규모 TTS 타깃셋(외래어)과 대규모
+    # 실발화셋(KsponSpeech)은 필요한 노출 배수가 다르다 — 공통 배수만 쓰면 외래어가
+    # 전체의 2% 안팎에 머물러 어휘 확장 신호가 묻힌다.
     if extra_json_dirs:
-        for d in extra_json_dirs:
-            d = d.strip()
-            if not d:
-                continue
-            print(f"\n   ➕ 추가 소스 병합: {d}  (oversample ×{oversample})")
+        base_n = len(splits["train"])          # 주 코퍼스 분량 (구성비 출력용)
+        dirs = [str(d).strip() for d in extra_json_dirs if str(d).strip()]
+        mults = [int(m) for m in (extra_oversample or [])]
+        if mults and len(mults) != len(dirs):
+            raise SystemExit(
+                f"❌ extra_oversample 개수({len(mults)})가 extra_json_dirs 개수({len(dirs)})와 "
+                f"다릅니다 — 소스 순서대로 1:1 로 지정하세요 "
+                f"(예: loanword_dataset,kspon_dataset → 15,3)")
+        merged = {}
+        for i, d in enumerate(dirs):
+            k = max(1, mults[i] if mults else oversample)
+            print(f"\n   ➕ 추가 소스 병합: {d}  (oversample ×{k})")
             extra = load_data(d, max_samples=0, apply_g2p=apply_g2p)
             extra_train = extra.get("train", [])
             if not extra_train:
                 print(f"      ⚠️ {d} 에 train 이 없어 건너뜀")
                 continue
-            splits["train"].extend(extra_train * max(1, oversample))
-            print(f"      → +{len(extra_train) * max(1, oversample):,}개 "
-                  f"(원본 {len(extra_train):,} × {max(1, oversample)})")
+            splits["train"].extend(extra_train * k)
+            merged[d] = len(extra_train) * k
+            print(f"      → +{merged[d]:,}개 (원본 {len(extra_train):,} × {k})")
+        # 추가 소스를 지정했는데 하나도 안 붙으면 '어휘 확장 없는 재학습'이 조용히
+        # 진행되어, 외래어가 오히려 퇴보한 결과를 재학습 실패로 오독하게 된다.
+        # 데이터가 빠진 채 GPU 시간을 태우지 않도록 명시적으로 중단한다.
+        if not merged:
+            raise SystemExit(
+                f"❌ extra_json_dirs 를 지정했는데 병합된 추가 학습 데이터가 0개입니다: {dirs}\n"
+                f"   각 경로의 train.jsonl 존재 여부를 확인하세요. 어휘 확장이 빠진 채\n"
+                f"   학습이 진행되는 사고를 막기 위해 중단합니다.")
         # 병합 후 셔플 (소스가 블록으로 몰리지 않도록)
         import random as _rnd
         _rnd.Random(42).shuffle(splits["train"])
-        print(f"\n   ✅ 병합 후 train 총계: {len(splits['train']):,}개")
+        total_n = len(splits["train"])
+        print(f"\n   ✅ 병합 후 train 총계: {total_n:,}개")
+        print(f"      · {json_dir} (주): {base_n:,}개 ({base_n / total_n:.1%})")
+        for d, n in merged.items():
+            print(f"      · {d}: {n:,}개 ({n / total_n:.1%})")
 
     # ── Dry Run 모드 ──
     if dry_run:
@@ -633,6 +656,12 @@ if __name__ == "__main__":
                              "예: loanword_dataset,kspon_dataset (외래어/저빈도어 도메인 확장)")
     parser.add_argument("--oversample", type=int, default=1,
                         help="추가 소스 복제 배수 (소규모 TTS 타깃셋 노출 빈도 확보용)")
+    parser.add_argument("--extra_oversample", type=str, default="",
+                        help="소스별 복제 배수(콤마 구분, --extra_json_dirs 와 같은 순서). "
+                             "미지정 시 --oversample 을 전 소스에 동일 적용. "
+                             "예: --extra_json_dirs loanword_dataset,kspon_dataset "
+                             "--extra_oversample 15,3 → 소규모 외래어셋만 노출을 키우고 "
+                             "대규모 KsponSpeech 는 그대로 둔다")
     args = parser.parse_args()
 
     train(
@@ -656,4 +685,10 @@ if __name__ == "__main__":
         repetition_penalty=args.repetition_penalty,
         no_repeat_ngram_size=args.no_repeat_ngram_size,
         init_model=args.init_model,
+        # 어휘 확장 소스는 여기서 train() 으로 반드시 전달한다. 인자만 정의해 두고
+        # 전달을 빠뜨리면 --extra_json_dirs 가 조용히 무시되어, 외래어 데이터 없이
+        # 주 코퍼스만 재학습하고도 "어휘 확장 재학습"으로 오독하게 된다.
+        extra_json_dirs=[d for d in args.extra_json_dirs.split(",") if d.strip()] or None,
+        oversample=args.oversample,
+        extra_oversample=[m for m in args.extra_oversample.split(",") if m.strip()] or None,
     )
