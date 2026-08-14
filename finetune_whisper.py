@@ -389,6 +389,7 @@ def train(
     noise_only_prob=0.05,
     competing_prob=0.0,
     competing_own_rir_prob=0.0,
+    competing_hard_prob=0.1,
     babble_prob=0.0,
     repetition_penalty=1.0,
     no_repeat_ngram_size=0,
@@ -513,6 +514,9 @@ def train(
             speech_files=competing_files,   # held-out 간섭 화자 (경쟁 화자 증강)
             p_competing=competing_prob,
             p_competing_own_rir=competing_own_rir_prob,  # 간섭 화자 별도 RIR(공간 분리, 플랜 §7 옵션)
+            # 하드 SIR(0~5dB, 간섭이 타깃과 맞먹는 근접 케이스) 비율. 평가의
+            # comp_sir0 는 이 구간의 경계값이라, 여기 노출이 적으면 그 조건만 회귀한다.
+            p_hard_sir=competing_hard_prob,
             p_babble=babble_prob,           # 다수 held-out 화자 웅성거림 배경 (쇼핑몰/재생음 조건)
         )
     else:
@@ -665,6 +669,9 @@ if __name__ == "__main__":
                         help="웅성거림(babble) 증강 확률. held-out(test) 화자 3~7명을 등파워 "
                              "합산한 배경을 SNR 0~15dB(일부 -5~0dB 하드)로 전 구간 혼합 — "
                              "쇼핑몰/영상 재생음 조건(실기기 확인 갭). 라벨은 타깃만 유지. 0=비활성")
+    parser.add_argument("--competing_hard_prob", type=float, default=0.1,
+                        help="경쟁 화자 중 하드 SIR(0~5dB, 간섭이 타깃과 맞먹는 근접 케이스) 비율. "
+                             "평가 지표 comp_sir0 가 이 구간의 경계값이라, 그 조건만 회귀할 때 올린다")
     parser.add_argument("--repetition_penalty", type=float, default=1.0,
                         help="기본 1.0=앱(WhisperKit) 일치. 1.2 등으로 anti-repeat crutch 사용 가능")
     parser.add_argument("--no_repeat_ngram_size", type=int, default=0,
@@ -702,6 +709,7 @@ if __name__ == "__main__":
         noise_only_prob=args.noise_only_prob,
         competing_prob=args.competing_prob,
         competing_own_rir_prob=args.competing_own_rir_prob,
+        competing_hard_prob=args.competing_hard_prob,
         babble_prob=args.babble_prob,
         repetition_penalty=args.repetition_penalty,
         no_repeat_ngram_size=args.no_repeat_ngram_size,

@@ -75,6 +75,9 @@ PARAGRAPHS="${PARAGRAPHS:-60}"                                # 문단 낭독 �
 # 기존 음향/화자 증강 유지 (직전 배포본과 동일 기본값 — run_server_pipeline.sh 참조)
 COMPETING_PROB="${COMPETING_PROB:-0.3}"
 COMPETING_OWN_RIR_PROB="${COMPETING_OWN_RIR_PROB:-0.0}"
+# 경쟁 화자 중 하드 SIR(0~5dB) 비율. 평가의 comp_sir0 는 이 구간의 경계값이라,
+# 그 조건만 회귀할 때 올린다(기본 0.1 = 기존 동작).
+COMPETING_HARD_PROB="${COMPETING_HARD_PROB:-0.1}"
 BABBLE_PROB="${BABBLE_PROB:-0.3}"
 export MUSAN_NOISE_DIR="${MUSAN_NOISE_DIR:-/data/musan/noise}"
 export RIR_DIR="${RIR_DIR:-/data/RIRS_NOISES/simulated_rirs}"
@@ -82,7 +85,7 @@ SMOKE="${SMOKE:-0}"
 # TTS 단독 학습(원칙 위반)을 의식적으로 허용할 때만 1 (배선 점검 외 사용 금지)
 ALLOW_TTS_ONLY="${ALLOW_TTS_ONLY:-0}"
 
-PY="PYTHONNOUSERSITE=1 CUDA_VISIBLE_DEVICES=$GPU python"
+PY="PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=$GPU python"
 NEW_MODEL="$OUT_DIR/best"
 
 # 이어서 학습이면 낮은 LR (성숙 모델 보존). 생짜면 2e-5.
@@ -113,7 +116,7 @@ echo "  GPU=$GPU  ZEROTH_DIR=$ZEROTH_DIR"
 echo "  LOANWORD_DIR=$LOANWORD_DIR  KSPON_DIR=$KSPON_DIR"
 echo "  INIT=$INIT_MODEL  →  OUT=$NEW_MODEL  (oversample ×$OVERSAMPLE)"
 echo "  TTS=$TTS_BACKEND  (OOD 평가: ${TTS_EVAL_BACKEND:-없음})  문단=$PARAGRAPHS"
-echo "  증강 유지: COMPETING_PROB=$COMPETING_PROB BABBLE_PROB=$BABBLE_PROB"
+echo "  증강 유지: COMPETING_PROB=$COMPETING_PROB (하드 SIR 비율 $COMPETING_HARD_PROB) BABBLE_PROB=$BABBLE_PROB"
 
 # ── 사전 점검 ──────────────────────────────────────────────
 [ -f "$ZEROTH_DIR/test.jsonl" ] || { echo "❌ $ZEROTH_DIR/test.jsonl 없음 (prepare_zeroth.py 먼저)"; exit 1; }
@@ -277,6 +280,7 @@ eval $PY finetune_whisper.py \
     --extra_oversample "$EXTRA_MULT" \
     --p_tail 0.3 --longform_prob 0.3 --noise_only_prob "${NOISE_ONLY_PROB:-0.05}" \
     --competing_prob "$COMPETING_PROB" --competing_own_rir_prob "$COMPETING_OWN_RIR_PROB" \
+    --competing_hard_prob "$COMPETING_HARD_PROB" \
     --babble_prob "$BABBLE_PROB" \
     --batch_size 8 --grad_accum 2 \
     --output_dir "$OUT_DIR" $INIT_ARG $TRAIN_ARGS
