@@ -84,6 +84,13 @@ def load_data(json_dir, max_samples=0, apply_g2p=False):
     g2p = None
     if apply_g2p:
         g2p = load_g2p()
+    # 라벨 일괄 계산기(캐시+병렬). 없으면 기존처럼 문장별로 g2p 를 직접 호출한다.
+    build_label_map = None
+    if apply_g2p:
+        try:
+            from g2p_label_cache import build_label_map
+        except Exception as e:
+            print(f"  ⚠️ G2P 라벨 캐시 사용 불가({e}) — 문장별 계산으로 진행")
 
     splits = {}
     total_skipped_short = 0
@@ -99,6 +106,8 @@ def load_data(json_dir, max_samples=0, apply_g2p=False):
         records = []
         skipped_short, skipped_long, skipped_nolabel = 0, 0, 0
 
+        # 1차 통과: 길이/경로 필터만 적용해 객체를 모은다.
+        objs = []
         with open(path, encoding="utf-8") as f:
             for line in f:
                 try:
@@ -114,33 +123,45 @@ def load_data(json_dir, max_samples=0, apply_g2p=False):
                     skipped_long += 1
                     continue
 
-                wav_path = obj.get("wav_path", "")
-                if not wav_path:
+                if not obj.get("wav_path", ""):
                     continue
 
-                # 라벨 결정
-                if apply_g2p and g2p:
-                    text = obj.get("transcript", "").strip()
-                    if not text:
-                        skipped_nolabel += 1
-                        continue
-                    label = g2p(text, descriptive=True).strip()
-                else:
-                    label = obj.get("label", "").strip()
+                objs.append(obj)
 
-                if not label or len(label) < 2:
+        # G2P 라벨은 여기서 한 번에 만든다 — 캐시 적중 시 재계산이 없고,
+        # 남은 문장은 CPU 코어로 나눠 계산한다(문장별 직렬 호출이 병목이었다).
+        label_map = {}
+        if apply_g2p and build_label_map is not None:
+            label_map = build_label_map(
+                [o.get("transcript", "").strip() for o in objs],
+                cache_dir=json_dir, desc=split_name)
+
+        for obj in objs:
+            duration = obj.get("duration", 0)
+            wav_path = obj.get("wav_path", "")
+            # 라벨 결정
+            if apply_g2p and g2p:
+                text = obj.get("transcript", "").strip()
+                if not text:
                     skipped_nolabel += 1
                     continue
+                label = label_map.get(text) or g2p(text, descriptive=True).strip()
+            else:
+                label = obj.get("label", "").strip()
 
-                # 노이즈 마커 정리
-                label = re.sub(r'\s+', ' ', label).strip()
+            if not label or len(label) < 2:
+                skipped_nolabel += 1
+                continue
 
-                records.append({
-                    "wav_path": wav_path,
-                    "label": label,           # 발음 전사 (학습 타겟)
-                    "transcript": obj.get("transcript", ""),  # 원문 (참고용)
-                    "duration": duration,
-                })
+            # 노이즈 마커 정리
+            label = re.sub(r'\s+', ' ', label).strip()
+
+            records.append({
+                "wav_path": wav_path,
+                "label": label,           # 발음 전사 (학습 타겟)
+                "transcript": obj.get("transcript", ""),  # 원문 (참고용)
+                "duration": duration,
+            })
 
         splits[split_name] = records
         total_skipped_short += skipped_short
