@@ -79,6 +79,8 @@ COMPETING_OWN_RIR_PROB="${COMPETING_OWN_RIR_PROB:-0.0}"
 # 그 조건만 회귀할 때 올린다(기본 0.1 = 기존 동작).
 COMPETING_HARD_PROB="${COMPETING_HARD_PROB:-0.1}"
 BABBLE_PROB="${BABBLE_PROB:-0.3}"
+# babble 중 하드 구간(-5~0dB) 비율. 평가의 babble_snr0 가 경계값(기본 0.1 = 기존 동작).
+BABBLE_HARD_PROB="${BABBLE_HARD_PROB:-0.1}"
 export MUSAN_NOISE_DIR="${MUSAN_NOISE_DIR:-/data/musan/noise}"
 export RIR_DIR="${RIR_DIR:-/data/RIRS_NOISES/simulated_rirs}"
 SMOKE="${SMOKE:-0}"
@@ -116,7 +118,7 @@ echo "  GPU=$GPU  ZEROTH_DIR=$ZEROTH_DIR"
 echo "  LOANWORD_DIR=$LOANWORD_DIR  KSPON_DIR=$KSPON_DIR"
 echo "  INIT=$INIT_MODEL  →  OUT=$NEW_MODEL  (oversample ×$OVERSAMPLE)"
 echo "  TTS=$TTS_BACKEND  (OOD 평가: ${TTS_EVAL_BACKEND:-없음})  문단=$PARAGRAPHS"
-echo "  증강 유지: COMPETING_PROB=$COMPETING_PROB (하드 SIR 비율 $COMPETING_HARD_PROB) BABBLE_PROB=$BABBLE_PROB"
+echo "  증강 유지: COMPETING_PROB=$COMPETING_PROB (하드 SIR $COMPETING_HARD_PROB) BABBLE_PROB=$BABBLE_PROB (하드 babble $BABBLE_HARD_PROB)"
 
 # ── 사전 점검 ──────────────────────────────────────────────
 [ -f "$ZEROTH_DIR/test.jsonl" ] || { echo "❌ $ZEROTH_DIR/test.jsonl 없음 (prepare_zeroth.py 먼저)"; exit 1; }
@@ -281,7 +283,7 @@ eval $PY finetune_whisper.py \
     --p_tail 0.3 --longform_prob 0.3 --noise_only_prob "${NOISE_ONLY_PROB:-0.05}" \
     --competing_prob "$COMPETING_PROB" --competing_own_rir_prob "$COMPETING_OWN_RIR_PROB" \
     --competing_hard_prob "$COMPETING_HARD_PROB" \
-    --babble_prob "$BABBLE_PROB" \
+    --babble_prob "$BABBLE_PROB" --babble_hard_prob "$BABBLE_HARD_PROB" \
     --batch_size 8 --grad_accum 2 \
     --output_dir "$OUT_DIR" $INIT_ARG $TRAIN_ARGS
 

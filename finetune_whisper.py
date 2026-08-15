@@ -391,6 +391,7 @@ def train(
     competing_own_rir_prob=0.0,
     competing_hard_prob=0.1,
     babble_prob=0.0,
+    babble_hard_prob=0.1,
     repetition_penalty=1.0,
     no_repeat_ngram_size=0,
     init_model=None,
@@ -518,6 +519,9 @@ def train(
             # comp_sir0 는 이 구간의 경계값이라, 여기 노출이 적으면 그 조건만 회귀한다.
             p_hard_sir=competing_hard_prob,
             p_babble=babble_prob,           # 다수 held-out 화자 웅성거림 배경 (쇼핑몰/재생음 조건)
+            # 하드 babble(-5~0dB, 배경이 타깃과 맞먹거나 더 큰 재생음 인접 케이스) 비율.
+            # 평가 babble_snr0 가 이 구간의 경계값이다(competing 쪽 p_hard_sir 와 같은 구조).
+            p_hard_babble=babble_hard_prob,
         )
     else:
         print("⚠️ 증강 비활성화 (--no_augment) — clean 학습")
@@ -672,6 +676,9 @@ if __name__ == "__main__":
     parser.add_argument("--competing_hard_prob", type=float, default=0.1,
                         help="경쟁 화자 중 하드 SIR(0~5dB, 간섭이 타깃과 맞먹는 근접 케이스) 비율. "
                              "평가 지표 comp_sir0 가 이 구간의 경계값이라, 그 조건만 회귀할 때 올린다")
+    parser.add_argument("--babble_hard_prob", type=float, default=0.1,
+                        help="babble 중 하드 구간(-5~0dB, 배경이 타깃과 맞먹거나 더 큰 케이스) 비율. "
+                             "평가 지표 babble_snr0 가 이 구간의 경계값이다")
     parser.add_argument("--repetition_penalty", type=float, default=1.0,
                         help="기본 1.0=앱(WhisperKit) 일치. 1.2 등으로 anti-repeat crutch 사용 가능")
     parser.add_argument("--no_repeat_ngram_size", type=int, default=0,
@@ -711,6 +718,7 @@ if __name__ == "__main__":
         competing_own_rir_prob=args.competing_own_rir_prob,
         competing_hard_prob=args.competing_hard_prob,
         babble_prob=args.babble_prob,
+        babble_hard_prob=args.babble_hard_prob,
         repetition_penalty=args.repetition_penalty,
         no_repeat_ngram_size=args.no_repeat_ngram_size,
         init_model=args.init_model,
