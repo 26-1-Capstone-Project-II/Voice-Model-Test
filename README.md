@@ -10,32 +10,47 @@
 ```
 .
 ├── [Whisper 발음 전사 파이프라인]
-│   ├── finetune_whisper.py          # Whisper-base 발음 전사 파인튜닝 (full fine-tuning)
-│   ├── augment.py                   # 원거리/소음 증강 (RIR 잔향 + MUSAN 소음 + 비음성 꼬리)
-│   ├── pronunciation_evaluator.py   # 발음 평가 엔진 (자모 레벨 비교)
-│   ├── test_whisper_phonetic.py     # 발음 전사 테스트 + 베이스라인 비교
-│   └── diagnose_farfield_baseline.py # 원거리/소음/긴발화 후반부 환각 정량 측정
+│   ├── finetune_whisper.py           # Whisper-base 발음 전사 파인튜닝 (full fine-tuning)
+│   ├── augment.py                    # 파형 증강 (경쟁 화자 → RIR 잔향 → MUSAN/babble → 비음성 꼬리)
+│   ├── g2p_label_cache.py            # G2P 라벨 사전 계산·캐시 (학습 시작 지연 제거)
+│   ├── pronunciation_evaluator.py    # 발음 평가 엔진 (자모 레벨 비교)
+│   ├── test_whisper_phonetic.py      # 발음 전사 테스트 + 베이스라인 비교
+│   ├── test_competing_speaker.py     # 경쟁 화자 증강 단위 테스트 (라벨 무결성 · SIR 분포)
+│   ├── test_babble.py                # babble 증강 단위 테스트 (SNR 분포 · 화자 수 K)
+│   └── diagnose_farfield_baseline.py # 원거리/소음/다화자/후반부 환각 정량 측정
 │
-├── [외래어/저빈도어 어휘 확장]
+├── [데이터 준비]
+│   ├── prepare_zeroth.py            # Zeroth-Korean 다운로드/변환 → WAV + JSONL
 │   ├── loanword_corpus.py           # 외래어 시드 어휘 + carrier 문장 생성기(조사 받침 처리)
 │   ├── prepare_loanword_tts.py      # 외래어 TTS 타깃 합성 (다중 백엔드 병합 + OOD 평가셋)
 │   └── prepare_kspon.py             # KsponSpeech 정규화((발음) 채택) → 학습 JSONL
 │
 ├── [공용 모듈]
 │   ├── korean_g2p_nomecab.py        # MeCab 없이 동작하는 G2P (Windows 호환)
-│   ├── jamo_utils.py                # 자모 Vocab 생성 + 음절↔자모 변환 유틸리티
-│   └── vad_segment.py               # Silero-VAD 기반 오디오 세그멘테이션
+│   └── jamo_utils.py                # 자모 Vocab 생성 + 음절↔자모 변환 유틸리티
 │
 ├── [학습/배포 자동화]
-│   ├── run_server_pipeline.sh       # 기준선→재학습→재기준선 원샷 (Linux 서버)
+│   ├── run_server_pipeline.sh       # 기준선→증강 재학습→재기준선 원샷 (Linux 서버)
 │   ├── run_vocab_pipeline.sh        # 외래어/저빈도어 어휘 확장 재학습 원샷 (Linux 서버)
 │   └── convert_to_coreml.sh         # WhisperKit CoreML 변환 + 앱 번들 교체 (macOS)
 │
-├── [iOS 변환 모델]
-│   └── Whisper_CoreML_Model/        # 🍏 ANE 호환 CoreML 변환 완료된 앱 탑재용 모델
+├── [모델 — 현역은 이 둘뿐]
+│   ├── best_model_vocab_e/best/     # ⭐ 현재 배포 체크포인트 (HF 포맷, 외래어 확장 런 E)
+│   └── Whisper_CoreML_Model/        # 🍏 위 체크포인트의 ANE 호환 CoreML 변환물 (앱 탑재용)
+│
+├── docs/
+│   ├── phase0-findings.md           # 경쟁 화자 증강 Phase 0 확인 결과·설계 결정
+│   └── datasets-and-licenses.md     # 사용 데이터셋 목록 + 상업적 이용 가능성 검토
+│
+├── archive/                         # 구버전 체크포인트 · 1회성 검증 · legacy 파이프라인
+│   └── README.md                    #   └ 무엇이 왜 여기 있는지 + 모델 계보표
 │
 └── README.md
 ```
+
+> **현역/보관 구분:** 현재 배포 모델(`best_model_vocab_e`)의 학습·평가·변환에 필요한 것만
+> 최상위에 둡니다. 구버전 체크포인트 5종, AIHub 구음장애 검증 스크립트, 초기 LoRA/자모 실험,
+> 과거 평가 산출물은 모두 [archive/](archive/) 로 옮겼습니다([archive/README.md](archive/README.md) 참고).
 
 ---
 
@@ -68,7 +83,7 @@
 │          ↓ G2P (descriptive=True)            │
 │     "가치 머글까?" (기대 발음)                  │
 │                                              │
-│  2. 사용자 발화 녹음 → Whisper tiny            │
+│  2. 사용자 발화 녹음 → 파인튜닝 Whisper-base    │
 │     "가티 머글까?" (실제 발음)                  │
 │                                              │
 │  3. 자모 레벨 비교                             │
@@ -93,8 +108,20 @@
 | **파인튜닝 방식** | **Full fine-tuning** — 전체 파라미터(~73M)를 학습해 출력 분포를 발음 전사로 재조정 |
 | **학습 데이터셋** | **Zeroth-Korean (낭독체, 약 51시간)** |
 | **라벨 생성** | 원본 텍스트를 `g2pk`로 자동 변환하여 발음 전사 라벨 생성 |
-| **학습 결과** | **검증 CER 0.088 (8.8%)** (이후 원거리/소음 증강 재학습으로 추가 개선 — [아래 섹션](#-원거리소음-강건성-증강-재학습) 참조) |
-| **저장 경로** | `best_model_whisper/best` |
+| **학습 결과** | **검증 CER 0.088 (8.8%)** — 아래 재학습 단계들의 출발점 |
+| **저장 경로** | 당시 `best_model_whisper/best` (현재는 [archive/models/](archive/models/)) |
+
+이 최초 학습본 위에 **재학습을 3차례 누적**한 것이 현재 배포 모델입니다.
+
+| 단계 | 무엇을 더했나 | 산출물 |
+|------|---------------|--------|
+| ① 최초 학습 | Zeroth-Korean + g2pk 발음 전사 라벨 | `best_model_whisper` |
+| ② 원거리/소음 증강 | RIR 잔향 · MUSAN 소음 · 비음성 꼬리 · long-form | `best_model_zeroth_aug` |
+| ③ 다화자 증강 | 경쟁 화자(1인 부분 겹침) · babble(3~7인 확산) | `best_model_whisper` 갱신 |
+| ④ 외래어 어휘 확장 | 외래어 TTS 합성 + KsponSpeech 자유발화 (런 A~E 중 E 채택) | **`best_model_vocab_e` ⭐ 현재 배포** |
+
+①~③ 체크포인트는 [archive/models/](archive/models/) 에 보관돼 있습니다(계보 대조용).
+**앱에 실제로 탑재되는 것은 `best_model_vocab_e/best` 를 변환한 `Whisper_CoreML_Model` 하나입니다.**
 
 ### 라벨 변환 예시 (g2pk 적용)
 
@@ -142,10 +169,11 @@ train split에만 파형 도메인에서 다음을 확률적으로 적용합니�
 
 ### 재학습 전략 — 생짜가 아니라 **이어서**
 
-`openai/whisper-base` 생짜에서 처음부터 학습하면 짧은 에폭으론 기존 모델을 못 따라잡습니다. 대신 **성숙한 모델에서 이어서 학습**합니다(`--init_model best_model_zeroth_aug/best`, LR 1e-5):
+`openai/whisper-base` 생짜에서 처음부터 학습하면 짧은 에폭으론 기존 모델을 못 따라잡습니다. 대신 **성숙한 모델에서 이어서 학습**합니다(`--init_model <직전 배포본>`, LR 1e-5). 이 규칙은 이후 모든 재학습에 그대로 적용됩니다 — 현재 기준선은 `best_model_vocab_e/best` 이고, 파이프라인 스크립트의 기본값도 여기로 맞춰져 있습니다.
 
 ```bash
 # 기준선(전) → 증강 재학습 → 기준선(후) 원샷 (Linux 서버)
+# 기본값: BASELINE_MODEL=INIT_MODEL=best_model_vocab_e/best, OUT_DIR=best_model_aug
 ./run_server_pipeline.sh
 ```
 
@@ -184,6 +212,46 @@ let result = try await whisperKit.transcribe(audioArray: samples, decodeOptions:
 
 ---
 
+## 🗣️ 다화자 강건성 — 경쟁 화자 + babble 증강 재학습
+
+실기기 테스트(카페·쇼핑몰·영상 재생음)에서 **옆 사람 말소리를 타깃 발화에 섞어 받아쓰는** 문제가 남았습니다. 소음(MUSAN)은 이미 증강돼 있었지만 *사람 목소리* 간섭은 분포에 없었기 때문입니다. 앱의 화자 게이트(프론트엔드 방어)에 **상보적인 학습 측 방어 계층**으로 두 가지를 추가했습니다.
+
+| 증강 | 무엇 | 레시피 |
+|------|------|--------|
+| **경쟁 화자** (`--competing_prob`) | held-out 화자 **1명**을 타깃에 부분 겹침으로 혼합 | SIR(타깃−간섭) 5~20dB 균등 + 약 10%는 0~5dB 하드. onset/offset 부분 겹침만, **full-overlap 없음** |
+| **babble** (`--babble_prob`) | held-out 화자 **3~7명**을 등파워 합산한 확산 배경 | SNR 0~15dB(일부 -5~0dB 하드), **전 구간**에 깔림 |
+
+### 라벨 무결성 — 이 워크스트림의 절대 원칙
+
+- 라벨은 **타깃 화자 전사만**. 간섭 화자의 전사는 라벨/프롬프트에 어떤 형태로도 들어가지 않습니다(증강기는 오디오만 입출력).
+- 간섭원은 **MUSAN speech 금지**(라벨 부재·도메인 불일치). 대신 **Zeroth 공식 test 스플릿**을 간섭 풀로 씁니다 — OpenSLR-40 train/test 는 화자 배타적이라 간섭 화자가 학습 타깃 화자와 겹치지 않습니다.
+- 증강 순서 고정: **경쟁 화자 믹스 → RIR → MUSAN/babble → SpecAugment**(SpecAugment 는 파형이 아니라 모델 내장 mel 단계).
+
+```bash
+# 재학습 (경쟁 화자 + babble 동시)
+COMPETING_PROB=0.3 BABBLE_PROB=0.3 ./run_server_pipeline.sh
+
+# 단위 테스트 — 라벨 무결성·SIR/SNR 분포·화자 수 K·소스 부족 시 자동 비활성
+python test_competing_speaker.py && python test_babble.py
+```
+
+### 측정 결과 (Zeroth test 457 발화, 재학습 전 = 원거리/소음 증강본)
+
+| 조건 | 재학습 전 CER | 재학습 후 CER | 환각률(전→후) |
+|------|------:|------:|------:|
+| clean (회귀 점검) | 0.027 | **0.027** | 0.0% → 0.2% |
+| reverb+noise_snr10 | 0.107 | **0.103** | 0.0% → 0.0% |
+| comp_sir5 (경쟁 화자 5dB) | 0.217 | **0.146** ✅ | 1.1% → 0.4% |
+| comp_sir0 (경쟁 화자 0dB, 하드) | 0.541 | **0.447** ✅ | 4.2% → 1.8% |
+| babble_snr5 | 0.288 | **0.186** ✅ | 6.6% → 0.7% |
+| babble_snr0 (등파워, 하드) | 1.093 | **0.841** ✅ | 41.8% → **7.0%** |
+
+→ **깨끗한 음성 무회귀**를 지키면서 다화자 조건의 오류율·환각률이 내려갔습니다. 특히 babble_snr0 에서 환각률이 41.8%→7.0% 로 떨어진 것이 실기기 체감 차이의 대부분입니다. 0dB 등파워 간섭은 여전히 CER 0.8 이상으로, **학습 측만으로는 풀리지 않는 구간**입니다(앱 화자 게이트가 본체, 학습 측은 보완).
+
+> 평가 지표는 CER/JER(자모 손실 오류율) + 환각률을 씁니다. **DER(화자 분할 오류율)은 사용하지 않습니다** — 이 모델은 화자 분할을 하지 않기 때문입니다. 설계 근거와 Phase 0 확인 결과는 [docs/phase0-findings.md](docs/phase0-findings.md) 참고.
+
+---
+
 ## 🌐 외래어/저빈도어 어휘 확장 재학습
 
 실기기에서 외래어·저빈도어가 OOV로 오인식됩니다(데시벨 → "대시베르", 캡스톤 프로젝트 → "캠핑카 소개팅"). 원인은 음향이 아니라 **어휘**입니다 — Zeroth는 순수 한국어 낭독체라 이 음절열의 acoustic→text 매핑을 본 적이 없습니다. 따라서 RIR/소음 증강이 아니라 **학습 데이터의 어휘 도메인 확장**으로 풉니다.
@@ -199,7 +267,7 @@ let result = try await whisperKit.transcribe(audioArray: samples, decodeOptions:
 
 ### 학습 전략 — 배포본 이어서 + 추가 소스 병합 + 증강 전체 유지
 
-현재 배포본(`best_model_whisper` = 경쟁 화자+babble 증강)에서 **이어서** 학습하고, 음향/화자 증강(RIR/MUSAN/competing/babble/long-form)을 그대로 둔 채 train에만 어휘 소스를 더합니다. val/test는 Zeroth만 유지해 **clean 정확도 회귀를 정직하게** 측정합니다.
+직전 배포본(경쟁 화자+babble 증강본)에서 **이어서** 학습하고, 음향/화자 증강(RIR/MUSAN/competing/babble/long-form)을 그대로 둔 채 train에만 어휘 소스를 더합니다. val/test는 Zeroth만 유지해 **clean 정확도 회귀를 정직하게** 측정합니다.
 
 ```bash
 # 준비 → 전 기준선 → 어휘 확장 재학습 → 후 기준선 원샷 (Linux 서버)
@@ -224,6 +292,22 @@ v2의 평가 맹점(held-out이 학습과 같은 gtts 도메인이라 CER이 낙
 - 판별 케이스: "캡스톤 프로젝트", "데시벨" + 받침 문장(없어요/않아요/보내겠습니다) 실기기 확인
 
 데이터셋 캐시는 코퍼스 생성기+설정의 **지문(fingerprint)이 일치할 때만 재사용**하고, 불일치하면 실패합니다(코퍼스를 고쳤는데 옛 데이터셋으로 학습되는 사고 방지). **운용:** 새 실패 어휘가 나오면 [loanword_corpus.py](loanword_corpus.py)의 `WORDS`에 단어를 추가하고 재합성·재학습하면 됩니다.
+
+### 결과 — 런 E (`best_model_vocab_e`, 현재 배포본)
+
+KSPON 비중을 낮추고(oversample ×1) 경쟁 화자 0.5 / 하드 babble 0.3 으로 둔 조합이 A~E 중 최종 채택본입니다. 직전 배포본(경쟁 화자+babble 증강) 대비:
+
+| 지표 | 직전 배포본 | 런 E | 비고 |
+|------|------:|------:|------|
+| **미지-어휘 held-out CER** | 0.661 | **0.084** ✅ | 학습 어휘와 **완전 disjoint** 한 일상 외래어 |
+| 외래어 CER (OOD TTS) | 0.403 | **0.025** ✅ | 학습에 쓰지 않은 TTS 엔진(melo)이 합성 |
+| 문단 낭독 CER | 0.346 | **0.012** ✅ | 연속 운율 장문 |
+| Zeroth clean CER | — | **0.035** | 런 A~E 중 최저(회귀 없음) |
+| noise-only 순수 환각률 | 96% | **8%** ✅ | 디코딩 설정과 별개로 학습 측에서도 크게 감소 |
+| comp_sir0 CER | 0.494 | 0.635 ⚠️ | **잔여 회귀** |
+| babble_snr0 CER | 0.859 | 1.023 ⚠️ | **잔여 회귀** |
+
+⚠️ **트레이드오프를 명시합니다.** 0dB 등파워 간섭 조건은 런 A~E(증강 파라미터 조합 5종)로도 회복되지 않아 **학습 측 천장**으로 판단했습니다. 마스터 플랜대로 이 구간의 본체 방어는 앱의 화자 게이트이고 학습 측은 보완이라는 전제를 따릅니다. 실기기에서 체감되는 OOV 오인식(데시벨/캡스톤 등)을 잡는 이득이 훨씬 컸기 때문에 런 E를 배포본으로 채택했습니다.
 
 ---
 
@@ -253,13 +337,17 @@ v2의 평가 맹점(held-out이 학습과 같은 gtts 도메인이라 CER이 낙
 - **결과:** 평균 **88.7%** (평균 CER 0.113)
 - 자모 단위로 어떤 음소가 잘못 나왔는지 구체적 피드백 제공 (예: ㅁ→ㅂ, ㅓ→ㅗ)
 
-**③ 베이스라인 비교 (원본 Whisper-tiny vs 파인튜닝)**
+**③ 베이스라인 비교 (미세조정 전 원본 Whisper vs 파인튜닝)**
 - 같은 음성을 두 모델에 동시 입력해 출력 차이를 직접 시연
+  (베이스라인은 [test_whisper_phonetic.py](test_whisper_phonetic.py) 코드 기본값인 `openai/whisper-tiny` — *맞춤법 교정 동작*의 대조군이며, 우리 모델의 베이스인 whisper-base 와는 별개)
 - 파인튜닝의 효과를 가장 설득력 있게 보여주는 핵심 단계
 
 ---
 
 ### 2차 검증 — AIHub 구음장애 데이터셋 (사용자 효용 검증) ⭐
+
+> **1회성 검증(아카이브).** 스크립트는 [archive/eval_aihub/](archive/eval_aihub/) 로 옮겼고,
+> 아래 수치는 재학습 이전 모델 기준입니다. 재현하려면 리포 루트에서 `PYTHONPATH=.` 를 붙여 실행하세요.
 
 > **목적:** **구음장애를 가진 분들이 본 앱을 사용해야 하는 이유**를 정량적으로 입증합니다.
 > 본 검증은 모델 정확도(CER)가 아니라 **앱 사용 가치**를 측정합니다.
@@ -329,14 +417,14 @@ AIHub(dysarthric)와 Zeroth(clean) 두 결과를 함께 제시하면 발표 신�
 
 ```bash
 # 1단계 — AIHub 원본 데이터를 VAD로 세그멘트 (최초 1회)
-PYTHONNOUSERSITE=1 python vad_segment.py \
+PYTHONPATH=. PYTHONNOUSERSITE=1 python archive/eval_aihub/vad_segment.py \
     --wav_dir  "/path/to/aihub/원천데이터" \
     --json_dir "/path/to/aihub/라벨링데이터" \
     --output_dir ./segmented_dataset
 
 # 2단계 — 사용자 효용 검증 (AIHub 구음장애)
-CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_baseline_ref.py \
-    --model_path best_model_whisper/best \
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=. PYTHONNOUSERSITE=1 python archive/eval_aihub/test_aihub_baseline_ref.py \
+    --model_path best_model_vocab_e/best \
     --baseline_model openai/whisper-tiny \
     --json_dir segmented_dataset \
     --num_samples 200 \
@@ -344,8 +432,8 @@ CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_baseline_ref.py \
     --output_dir results/aihub_value_proposition
 
 # 3단계 — 통제군 (Zeroth-Korean clean speech)
-CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_baseline_ref.py \
-    --model_path best_model_whisper/best \
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=. PYTHONNOUSERSITE=1 python archive/eval_aihub/test_aihub_baseline_ref.py \
+    --model_path best_model_vocab_e/best \
     --baseline_model openai/whisper-tiny \
     --json_dir zeroth_dataset \
     --num_samples 200 \
@@ -412,7 +500,7 @@ CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_baseline_ref.py \
 | ① 발음 전사 정확도 (Exact Match) | **4 / 10** | 10문장 중 4문장이 g2pk 기대 발음과 *완벽히* 일치 |
 | ② 발음 평가 점수 `(1−CER)×100` | **평균 88.7%** | CER 0.113 — 자모 단위 약 1자 오차 |
 | ③ 베이스라인(원본 Whisper) 대비 | 정성 시연 입증 | 원본은 표준 표기로 교정, 본 앱은 발음 그대로 |
-| 🏆 **검증셋 최종 CER** | **0.088 (8.8%)** | 학습 51h LoRA 파인튜닝의 안정적 발음 전사 능력 |
+| 🏆 **검증셋 최종 CER** | **0.088 (8.8%)** | Zeroth 51h full fine-tuning 의 안정적 발음 전사 능력 |
 
 #### 1차 테스트 결론
 모델이 **정상 발음 환경에서 한국어 음운변동(경음화/비음화/구개음화/연음화)을 정확히 학습**했음이 입증되었습니다. 깨끗한 음성에서 평균 88.7%의 발음 점수, CER 0.088은 발음 평가 엔진의 **기반 능력(foundation capability)** 이 견고함을 의미합니다.
@@ -491,9 +579,26 @@ Y (본 앱 = 파인튜닝 모델):  박 싸무장  츠근   버붜네   미구�
 
 ## 📊 최종 성능 요약
 
+### 현재 배포 모델 (`best_model_vocab_e/best` → `Whisper_CoreML_Model`)
+
 | 구분 | 측정값 | 의미 |
 |------|--------|-----|
-| **Zeroth-Korean 검증 CER** | **0.088 (8.8%)** | 정상 발음 전사 정확도 — 기반 능력 |
+| **Zeroth clean CER** | **0.035** | 깨끗한 발음 전사 정확도 (재학습 4단계 누적 후 무회귀) |
+| **미지-어휘 held-out CER** | **0.084** | 학습 어휘와 완전 disjoint 한 외래어 — OOV 대응력 |
+| **외래어 OOD CER** | **0.025** | 학습에 쓰지 않은 TTS 엔진 합성음 |
+| **문단 낭독 CER** | **0.012** | 연속 운율 장문 열화 |
+| **noise-only 순수 환각률** | **8%** | 비음성 구간 환각 (앱은 `suppressBlank=false` 로 추가 차단) |
+| comp_sir0 / babble_snr0 CER | 0.635 / 1.023 ⚠️ | 0dB 등파워 간섭 — **학습 측 천장**, 앱 화자 게이트가 본체 |
+
+### 앱 가치 검증 (AIHub 구음장애 · 1회성 검증, 단계 ①~② 모델 기준)
+
+> 아래 수치는 **재학습 이전 모델**에서 측정한 1회성 가치 검증입니다(스크립트는
+> [archive/eval_aihub/](archive/eval_aihub/)). 이후 재학습은 clean 무회귀를 조건으로 두고
+> 원거리·다화자·어휘 지표를 개선해 왔으므로, 배포 모델의 현재 성능은 위 표가 기준입니다.
+
+| 구분 | 측정값 | 의미 |
+|------|--------|-----|
+| **Zeroth-Korean 검증 CER** | **0.088 (8.8%)** | 최초 학습본의 발음 전사 정확도 — 기반 능력 |
 | **Zeroth 발음 점수 (1−CER)** | **88.7%** | 자모 단위 발음 일치율 |
 | **AIHub 자동교정 거부율** | **100%** | 일반 ASR과의 본질적 차별성 (V1) |
 | **Zeroth S/N 비율** | **24.2%** | 진짜 발음 정보의 농도 (V3 핵심) |
@@ -506,9 +611,9 @@ Y (본 앱 = 파인튜닝 모델):  박 싸무장  츠근   버붜네   미구�
 
 ### 환경 설치
 ```bash
+# GPU 빌드는 먼저(인덱스 지정), 나머지는 requirements.txt 가 진실
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
-pip install transformers datasets accelerate evaluate jiwer librosa soundfile
-pip install openai-whisper gtts sounddevice
+pip install -r requirements.txt
 ```
 
 ### 데이터 다운로드 및 전처리 (Zeroth-Korean)
@@ -532,15 +637,36 @@ CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python finetune_whisper.py \
     --lr 2e-5 --num_epochs 3 --batch_size 8 --grad_accum 2
 ```
 
+### 재학습 (권장 경로 — 배포본에서 이어서)
+```bash
+# 원거리/소음/다화자 증강 재학습
+COMPETING_PROB=0.3 BABBLE_PROB=0.3 ./run_server_pipeline.sh
+
+# 외래어/저빈도어 어휘 확장 재학습
+KSPON_AUDIO_ROOT=/data/KsponSpeech KSPON_TRN=/data/KsponSpeech_scripts/train.trn \
+    ./run_vocab_pipeline.sh
+
+# 재학습 후 macOS 에서 CoreML 변환 + 앱 번들 교체 (기본 입력 = best_model_vocab_e/best)
+./convert_to_coreml.sh [MODEL_DIR]
+```
+
 ### 테스트 및 검증
 ```bash
+# 증강기 단위 테스트 (라벨 무결성 · SIR/SNR 분포)
+python test_competing_speaker.py && python test_babble.py
+
+# 다화자/원거리 평가 (재학습 전후 대조)
+CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python diagnose_farfield_baseline.py \
+    --model_path best_model_vocab_e/best --json_dir zeroth_dataset --apply_g2p \
+    --num_samples 200 --competing_sir_list 0,5,10,15,20 --babble_snr_list 0,5,10
+
 # 발음 전사 성능 및 베이스라인(원본 모델) 대비 교정 문제 극복 검증
 CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_whisper_phonetic.py \
-    --model_path best_model_whisper/best
+    --model_path best_model_vocab_e/best
 
 # 파일 단독 평가 및 자모 레벨 피드백 확인
 CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python pronunciation_evaluator.py \
-    --model_path best_model_whisper/best \
+    --model_path best_model_vocab_e/best \
     --audio recording.wav \
     --target "같이 먹을까?"
 ```
@@ -570,36 +696,52 @@ git lfs pull
    - **팝업 주의:** `Create groups` 옵션을 선택하세요.
 4. Xcode 프로젝트 설정 탭(Target) `Info` 메뉴에서 **Microphone Usage Description** (마이크 권한)을 "발음 평가를 위해 마이크를 사용합니다." 로 추가합니다.
 
-### 3️⃣ 데모 앱 구동
-저장소에 올려둔 `IOS_Whisper_Test_App.swift` 코드를 열고, Xcode 안의 내 기본 뷰(`ContentView.swift` 등)에 전체 복사/붙여넣기 합니다.
-이후 시뮬레이터나 본인 아이폰 기기로 연결하여 앱을 빌드(Cmd+R) 하면, **소리나는 대로 모두 잡아내는 세상에서 단 하나뿐인 발음 진단기 앱**이 내 폰 안에서 돌아가는 것을 볼 수 있습니다!
+### 3️⃣ 앱에서 로드
+WhisperKit 으로 이 폴더를 로드하고, 비음성 구간 환각을 막기 위해 디코딩 옵션을 맞춥니다
+(앱 전체 구현은 별도 리포 **On-Voice** 에 있습니다 — 이 리포는 모델 학습·변환만 담당).
+
+```swift
+let whisperKit = try await WhisperKit(modelFolder: "Whisper_CoreML_Model")
+var options = DecodingOptions()
+options.suppressBlank = false        // 첫 토큰 EOS 허용 → noise-only 환각 제거
+let result = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
+```
+
+### 4️⃣ 모델을 갱신했다면
+재학습 후 macOS 에서 `./convert_to_coreml.sh` 를 돌리면 `Whisper_CoreML_Model` 이 새 가중치로
+교체됩니다(변환 품질 기준 PSNR 40+). Xcode 에서는 기존 폴더를 빼고 갱신된 폴더를 다시
+드래그(Create groups)한 뒤, 가중치를 Git LFS 로 커밋합니다.
 
 ---
 
 ## 📦 의존성
 
+정확한 목록·버전 핀은 [requirements.txt](requirements.txt) 가 기준입니다(`transformers==4.46.3` 고정).
+
 ```
-torch>=2.0.0
-transformers>=4.30.0
-librosa>=0.10.0
-jiwer>=3.0.0
-sounddevice>=0.4.6
-evaluate>=0.4.0
-accelerate>=1.0.0
-silero-vad
-soundfile
-g2pk>=0.9.4
-gtts>=2.3.0
-openai-whisper
-peft
+torch / torchaudio      # 학습·추론
+transformers==4.46.3    # Whisper 구현 (버전 고정)
+datasets / accelerate / evaluate / jiwer
+librosa / soundfile / scipy / numpy   # 오디오 로딩 + 증강(RIR 컨볼루션·믹싱)
+g2pk                    # 발음 전사 라벨 생성
+gtts / pyttsx3          # 외래어 TTS 합성 (평가용 melo 는 별도 설치)
+silero-vad / sounddevice
+peft                    # archive/legacy_pipelines(LoRA 실험) 전용 — 현 학습 경로는 미사용
 ```
 
 ---
 
 ## 🔗 참고
 
-- 모델: [openai/whisper-tiny](https://huggingface.co/openai/whisper-tiny)
+- 베이스 모델: [openai/whisper-base](https://huggingface.co/openai/whisper-base)
 - G2P: [g2pk](https://github.com/Kyubyong/g2pK)
 - VAD: [Silero-VAD](https://github.com/snakers4/silero-vad)
 - iOS 배포: [WhisperKit](https://github.com/argmaxinc/WhisperKit)
 - HuggingFace Zeroth-Korean 데이터: [Bingsu/zeroth-korean](https://huggingface.co/datasets/Bingsu/zeroth-korean)
+- 증강 소스: MUSAN([OpenSLR-17](https://openslr.org/17/)) · RIRS_NOISES([OpenSLR-28](https://openslr.org/28/))
+
+### 리포 내 문서
+- [docs/phase0-findings.md](docs/phase0-findings.md) — 경쟁 화자 증강 Phase 0 확인 결과·설계 결정
+- [docs/datasets-and-licenses.md](docs/datasets-and-licenses.md) — 데이터셋 목록 + 상업적 이용 가능성 검토
+- [archive/README.md](archive/README.md) — 보관 자산 목록 + 모델 계보표
+- [CLAUDE.md](CLAUDE.md) — 작업 지침(절대 원칙: 라벨 무결성 · held-out 간섭원 · 증강 순서)

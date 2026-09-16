@@ -58,11 +58,13 @@ clean → (p_reverb) reverb[RIR] → (p_noise) +noise[MUSAN]@SNR → (p_gain) ga
 
 - 브랜치 컨벤션: 플랜 §11 → `feat/competing-speaker-aug`. 현재 브랜치 `whisper-base-zeroth`.
 - 재학습은 성숙 모델에서 이어서(`--init_model best_model_zeroth_aug/best`, 낮은 LR)가 기존 관례.
+  (작성 시점 기준. 2026-09-16 현재 기준선은 `best_model_vocab_e/best` 이며 당시 체크포인트는
+  `archive/models/` 로 이동 — 관례 자체는 그대로 유효.)
 - 재학습 후 macOS에서 `./convert_to_coreml.sh` → WhisperKit CoreML 교체(가중치 Git LFS).
 
 ## 5. 재학습 후 발견 — noise-only 환각 확신도 상승과 앱 게이트 마진 (2026-07-13)
 
-경쟁 화자+babble 결합 재학습(457 평가, `results/full2_*`)에서 확인:
+경쟁 화자+babble 결합 재학습(457 평가, `archive/results/full2_*`)에서 확인:
 
 - **noise-only 순수 환각률은 98%로 동일**하나, **환각 시 avgLogProb 가 -1.17 → -0.87 로
   상승**(확신도 증가). 앱 신뢰도 게이트 임계값 `confidenceFloor = -0.8`

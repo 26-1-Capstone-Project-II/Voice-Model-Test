@@ -46,7 +46,7 @@ python finetune_whisper.py --json_dir zeroth_dataset --apply_g2p \
 python test_competing_speaker.py && python test_babble.py
 
 # §9 다화자 평가 (재학습 전후 대조): comp_sir*/babble_snr* 조건 + 자모 손실 오류율(JER)
-python diagnose_farfield_baseline.py --model_path best_model_whisper/best \
+python diagnose_farfield_baseline.py --model_path best_model_vocab_e/best \
     --json_dir zeroth_dataset --apply_g2p --num_samples 200 \
     --competing_sir_list 0,5,10,15,20 --competing_overlaps 0.5,1.0 \
     --babble_snr_list 0,5,10
@@ -65,6 +65,15 @@ babble 도 같은 held-out(test) 풀에서 합성하므로 라벨 무결성이 �
 - SIR/SNR 분포: 복원 값이 설정 범위 안 + 하드 비율이 p_hard_* 에 수렴
 - 경쟁: full-overlap 없음 / babble: 화자 수 K 가 범위 안
 - 소스 풀 부족 시 자동 비활성(무개입)
+
+### 리포 구조
+
+- **현역 체크포인트는 `best_model_vocab_e/best` 하나**(→ `Whisper_CoreML_Model` 로 변환·탑재).
+  재학습·평가·변환 스크립트 기본값이 모두 여기를 가리킨다.
+- 구버전 체크포인트(`best_model`, `best_model_whisper`, `best_model_zeroth_aug`,
+  `best_model_vocab`, `finetuned_model_lora`), AIHub 구음장애 1회성 검증 스크립트,
+  legacy 파이프라인, 과거 평가 산출물은 **`archive/`** 로 이동했다 (`archive/README.md` 에 계보표).
+  아카이브 스크립트 실행 시 공용 모듈 import 때문에 루트에서 `PYTHONPATH=.` 필요.
 
 ### 컨벤션
 
