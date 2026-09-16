@@ -20,7 +20,7 @@
 
 실행(서버):
     CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python diagnose_farfield_baseline.py \\
-        --model_path best_model_whisper/best \\
+        --model_path best_model_vocab_e/best \\
         --json_dir zeroth_dataset \\
         --num_samples 200 \\
         --apply_g2p \\

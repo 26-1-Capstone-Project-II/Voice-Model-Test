@@ -36,7 +36,7 @@ X와 Y의 자모-수준 차이가 본 앱이 사용자에게 노출하는 추가
 -----------------
     # AIHub 구음장애 (target user proxy)
     CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_baseline_ref.py \\
-        --model_path best_model_whisper/best \\
+        --model_path best_model_vocab_e/best \\
         --baseline_model openai/whisper-tiny \\
         --json_dir segmented_dataset \\
         --num_samples 200 \\
@@ -45,7 +45,7 @@ X와 Y의 자모-수준 차이가 본 앱이 사용자에게 노출하는 추가
 
     # Zeroth-Korean (control group, clean speech)
     CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_baseline_ref.py \\
-        --model_path best_model_whisper/best \\
+        --model_path best_model_vocab_e/best \\
         --baseline_model openai/whisper-tiny \\
         --json_dir zeroth_dataset \\
         --num_samples 200 \\

@@ -22,7 +22,7 @@ B) 파인튜닝 모델 출력       vs  g2pk(transcript) (기대 발음)
 실행 (Linux 서버)
 -----------------
     CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_aihub_dysarthria.py \\
-        --model_path best_model_whisper/best \\
+        --model_path best_model_vocab_e/best \\
         --baseline_model openai/whisper-tiny \\
         --json_dir segmented_dataset \\
         --num_samples 200 \\

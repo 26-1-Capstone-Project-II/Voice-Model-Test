@@ -15,8 +15,8 @@
 # 환경변수(기본값):
 #   GPU=0                          CUDA_VISIBLE_DEVICES
 #   DATA_DIR=zeroth_dataset        학습/평가 JSONL 디렉터리
-#   BASELINE_MODEL=best_model_zeroth_aug/best   재학습 전(현재 배포) 모델
-#   OUT_DIR=best_model_whisper     재학습 결과 저장 (best/ 하위에 모델)
+#   BASELINE_MODEL=best_model_vocab_e/best      재학습 전(현재 배포) 모델
+#   OUT_DIR=best_model_aug         재학습 결과 저장 (best/ 하위에 모델)
 #   MUSAN_NOISE_DIR=/data/musan/noise
 #   RIR_DIR=/data/RIRS_NOISES/simulated_rirs
 #   RESULTS=results                기준선 결과 출력 루트
@@ -28,11 +28,11 @@ cd "$ROOT"
 
 GPU="${GPU:-0}"
 DATA_DIR="${DATA_DIR:-zeroth_dataset}"
-BASELINE_MODEL="${BASELINE_MODEL:-best_model_zeroth_aug/best}"
+BASELINE_MODEL="${BASELINE_MODEL:-best_model_vocab_e/best}"
 # 기본: 성숙한 모델에서 *이어서* 학습 (깨끗한 정확도 보존 + 증강만 추가).
 # 생짜(openai/whisper-base)에서 처음부터 학습하려면 INIT_MODEL=scratch 로.
 INIT_MODEL="${INIT_MODEL:-$BASELINE_MODEL}"
-OUT_DIR="${OUT_DIR:-best_model_whisper}"
+OUT_DIR="${OUT_DIR:-best_model_aug}"
 RESULTS="${RESULTS:-results}"
 export MUSAN_NOISE_DIR="${MUSAN_NOISE_DIR:-/data/musan/noise}"
 export RIR_DIR="${RIR_DIR:-/data/RIRS_NOISES/simulated_rirs}"

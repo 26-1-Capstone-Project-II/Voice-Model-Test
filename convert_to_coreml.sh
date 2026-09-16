@@ -9,7 +9,7 @@
 #   ./convert_to_coreml.sh [MODEL_DIR] [OUT_DIR] [DEST_DIR]
 #
 # 기본값:
-#   MODEL_DIR = best_model_zeroth_aug/best   (HF 체크포인트: config.json/model.safetensors 포함)
+#   MODEL_DIR = best_model_vocab_e/best      (HF 체크포인트: config.json/model.safetensors 포함)
 #   OUT_DIR   = coreml_out                   (변환 중간 산출물, .gitignore 됨)
 #   DEST_DIR  = Whisper_CoreML_Model         (앱이 로드하는 폴더)
 #
@@ -19,7 +19,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-MODEL_DIR="${1:-best_model_zeroth_aug/best}"
+MODEL_DIR="${1:-best_model_vocab_e/best}"
 OUT_DIR="${2:-coreml_out}"
 DEST_DIR="${3:-Whisper_CoreML_Model}"
 GEN="wkt/bin/whisperkit-generate-model"

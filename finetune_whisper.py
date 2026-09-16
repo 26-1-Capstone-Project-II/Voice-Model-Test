@@ -412,7 +412,7 @@ def train(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 초기 가중치: init_model 이 주어지면 그 체크포인트에서 *이어서* 학습한다.
-    # (성숙한 best_model_zeroth_aug/best 에 새 증강만 얹어 깨끗한 정확도 보존)
+    # (성숙한 best_model_vocab_e/best 에 새 증강만 얹어 깨끗한 정확도 보존)
     # 없으면 생짜 BASE_MODEL 에서 처음부터 학습.
     src_model = init_model or BASE_MODEL
 
@@ -684,7 +684,7 @@ if __name__ == "__main__":
     parser.add_argument("--no_repeat_ngram_size", type=int, default=0,
                         help="기본 0=앱 일치. 3 등으로 반복 억제 crutch 사용 가능")
     parser.add_argument("--init_model", type=str, default=None,
-                        help="이 체크포인트에서 이어서 학습 (예: best_model_zeroth_aug/best). "
+                        help="이 체크포인트에서 이어서 학습 (예: best_model_vocab_e/best). "
                              "미지정 시 openai/whisper-base 에서 처음부터")
     parser.add_argument("--extra_json_dirs", type=str, default="",
                         help="train 에 더할 추가 데이터 디렉터리(콤마 구분). "

@@ -5,7 +5,7 @@ gTTS로 테스트 오디오를 생성한 후, Whisper 모델의 발음 전사 �
 
 실행:
     CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_whisper_phonetic.py \\
-        --model_path best_model_whisper/best
+        --model_path best_model_vocab_e/best
 
 기대 결과:
     - 정상 발화(gTTS): CER < 0.2

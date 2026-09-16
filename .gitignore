@@ -17,7 +17,8 @@ best_model_jamo/
 jamo_tokenizer/
 
 # Whisper 모델 제외 규정 (최종 best 모델만 포함, 찌꺼기 체크포인트는 무시)
-best_model_whisper/checkpoint-*/
+best_model_vocab_e/checkpoint-*/
+archive/models/*/checkpoint-*/
 
 # Python 캐시
 __pycache__/
@@ -35,6 +36,4 @@ segmented_test*/
 venv/
 wkt/
 coreml_out/
-best_model_vocab/.DS_Store
-finetuned_model_lora/.DS_Store
 .DS_Store

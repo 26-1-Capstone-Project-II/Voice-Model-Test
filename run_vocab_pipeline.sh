@@ -53,11 +53,11 @@ WS="${WS:-$HOME/mingly_workspace/Voice-Model-Test}"
 ZEROTH_DIR="${ZEROTH_DIR:-zeroth_dataset}"                    # 주(主) 코퍼스 (val/test 기준)
 LOANWORD_DIR="${LOANWORD_DIR:-$WS/loanword_dataset}"          # 외래어 TTS 합성셋
 KSPON_DIR="${KSPON_DIR:-$WS/kspon_dataset}"                   # 실제 자유대화 정규화셋
-# 현재 배포본(babble 증강, On-Voice #268 = 6efa494c 산출물)에서 이어서 학습.
+# 현재 배포본(외래어 어휘 확장 런 E = cd4363e5 산출물)에서 이어서 학습.
 # 화자 격리(경쟁 화자/babble) 학습 측 방어를 보존한 채 어휘만 확장한다.
-BASELINE_MODEL="${BASELINE_MODEL:-best_model_whisper/best}"
+BASELINE_MODEL="${BASELINE_MODEL:-best_model_vocab_e/best}"
 INIT_MODEL="${INIT_MODEL:-$BASELINE_MODEL}"
-OUT_DIR="${OUT_DIR:-best_model_vocab}"
+OUT_DIR="${OUT_DIR:-best_model_vocab_f}"
 RESULTS="${RESULTS:-results_vocab}"
 OVERSAMPLE="${OVERSAMPLE:-3}"                                 # TTS 타깃셋 노출 배수
 # 소스별 배수(미지정 시 OVERSAMPLE 과 동일 = 기존 동작). 외래어셋은 KsponSpeech 6만에

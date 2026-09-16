@@ -13,7 +13,7 @@ Whisper 모델 + G2P + 자모 비교로 발음 오류를 자모 단위로 감지
 사용 예시:
     from pronunciation_evaluator import PronunciationEvaluator
 
-    evaluator = PronunciationEvaluator("best_model_whisper/best")
+    evaluator = PronunciationEvaluator("best_model_vocab_e/best")
     result = evaluator.evaluate(
         audio_path="recording.wav",
         target_text="같이 먹을까?"
@@ -192,7 +192,7 @@ class PronunciationEvaluator:
     Whisper 기반 발음 평가기.
 
     사용:
-        evaluator = PronunciationEvaluator("best_model_whisper/best")
+        evaluator = PronunciationEvaluator("best_model_vocab_e/best")
         result = evaluator.evaluate("recording.wav", "같이 먹을까?")
     """
 

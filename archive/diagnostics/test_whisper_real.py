@@ -6,7 +6,7 @@ gTTS(합성 음성)이 아닌 실제 음성으로 모델의 발음 전사 능력
 
 실행:
     CUDA_VISIBLE_DEVICES=0 PYTHONNOUSERSITE=1 python test_whisper_real.py \\
-        --model_path best_model_whisper/best --num_samples 100
+        --model_path best_model_vocab_e/best --num_samples 100
 """
 
 import json
